@@ -1,5 +1,6 @@
 pub mod config;
 pub mod decay;
+pub mod embedding;
 pub mod error;
 pub mod hippocampus;
 pub mod memory;
@@ -9,6 +10,7 @@ pub mod types;
 
 pub use config::Config;
 pub use decay::{Curve, boost, history_score, time_decay};
+pub use embedding::{EmbeddingProvider, MockProvider};
 pub use hippocampus::{Hippocampus, HippocampusBuilder};
 pub use memory::Trace;
 pub use recall::Query;

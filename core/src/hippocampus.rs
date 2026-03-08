@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use crate::config::Config;
+use crate::embedding::EmbeddingProvider;
 use crate::error::Result;
 use crate::memory::Trace;
 use crate::recall::RecallResult;
@@ -9,6 +12,7 @@ use crate::types::{Embedding, Id, now};
 pub struct Hippocampus<S: Storage> {
     config: Config,
     storage: S,
+    provider: Option<Arc<dyn EmbeddingProvider>>,
 }
 
 impl Hippocampus<InMemoryStorage> {
@@ -41,6 +45,34 @@ impl<S: Storage> Hippocampus<S> {
         self.apply_reconsolidation(&result).await?;
 
         Ok(result.matches().to_vec())
+    }
+
+    /// Embeds the given text using the configured `EmbeddingProvider` and memorizes it.
+    /// Returns an error if no provider is configured.
+    pub async fn memorize_text(&self, text: &str) -> Result<Id> {
+        let provider = self
+            .provider
+            .as_ref()
+            .ok_or_else(|| crate::error::Error::Storage("No embedding provider configured".to_string()))?;
+
+        let embedding = provider.embed(text).await?;
+        let trace = Trace::new(Id::new(), embedding);
+        let id = trace.id;
+
+        self.memorize(trace).await?;
+        Ok(id)
+    }
+
+    /// Embeds the given text using the configured `EmbeddingProvider` and recalls matching memories.
+    /// Returns an error if no provider is configured.
+    pub async fn recall_text(&self, text: &str) -> Result<Vec<crate::recall::Match>> {
+        let provider = self
+            .provider
+            .as_ref()
+            .ok_or_else(|| crate::error::Error::Storage("No embedding provider configured".to_string()))?;
+
+        let probe = provider.embed(text).await?;
+        self.recall(probe).await
     }
 
     pub async fn forget(&self, id: Id) -> Result<()> {
@@ -88,9 +120,15 @@ pub struct HippocampusBuilder {
     emotion_weight: Option<f64>,
     context_weight: Option<f64>,
     use_temporal_spreading: Option<bool>,
+    provider: Option<Arc<dyn EmbeddingProvider>>,
 }
 
 impl HippocampusBuilder {
+    pub fn provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+
     pub fn decay_rate(mut self, rate: f64) -> Self {
         self.decay_rate = Some(rate);
         self
@@ -162,6 +200,7 @@ impl HippocampusBuilder {
         Ok(Hippocampus {
             config: config.build()?,
             storage,
+            provider: self.provider,
         })
     }
 }
@@ -267,6 +306,34 @@ mod tests {
 
         let all = hippoe.all().await.unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_hippocampus_memorize_and_recall_text() {
+        use crate::embedding::MockProvider;
+
+        let provider = Arc::new(MockProvider::new(3));
+        let hippoe = Hippocampus::builder()
+            .provider(provider)
+            .build(InMemoryStorage::new())
+            .unwrap();
+
+        let id1 = hippoe.memorize_text("hello world").await.unwrap();
+        let _id2 = hippoe.memorize_text("hello foo").await.unwrap();
+        let _id3 = hippoe.memorize_text("bar baz").await.unwrap();
+
+        let matches = hippoe.recall_text("hello world").await.unwrap();
+
+        assert_eq!(matches.len(), 3);
+        assert_eq!(matches[0].id, id1);
+        assert!(matches[0].score.similarity > matches[2].score.similarity);
+    }
+
+    #[tokio::test]
+    async fn test_hippocampus_text_without_provider() {
+        let hippoe = Hippocampus::new().unwrap();
+        let result = hippoe.memorize_text("test").await;
+        assert!(result.is_err());
     }
 
     #[test]
