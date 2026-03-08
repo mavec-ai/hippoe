@@ -1,38 +1,80 @@
 use crate::config::Config;
 use crate::error::Result;
-use crate::recall::{recall, Query};
+use crate::memory::Trace;
+use crate::recall::RecallResult;
+use crate::recall::{Query, recall};
+use crate::storage::{InMemoryStorage, Storage};
+use crate::types::{Embedding, Id, now};
 
-pub struct Hippocampus {
+pub struct Hippocampus<S: Storage> {
     config: Config,
+    storage: S,
 }
 
-impl Hippocampus {
-    pub fn new() -> Self {
-        Self {
-            config: Config::default(),
-        }
-    }
-
-    pub fn with_config(config: Config) -> Self {
-        Self { config }
+impl Hippocampus<InMemoryStorage> {
+    pub fn new() -> Result<Self> {
+        HippocampusBuilder::default().build(InMemoryStorage::new())
     }
 
     pub fn builder() -> HippocampusBuilder {
         HippocampusBuilder::default()
     }
+}
 
-    pub fn recall(&self, query: Query) -> Result<crate::recall::RecallResult> {
+impl<S: Storage> Hippocampus<S> {
+    pub fn recall_with_query(&self, query: Query) -> Result<RecallResult> {
         recall(query, &self.config)
+    }
+
+    pub async fn memorize(&self, trace: Trace) -> Result<()> {
+        self.storage.put(trace).await
+    }
+
+    pub async fn recall(&self, probe: Embedding) -> Result<Vec<crate::recall::Match>> {
+        let traces = self.storage.all().await?;
+        let links = self.storage.links().await?;
+
+        let query = Query::new(probe).memories(&traces).links(&links).now(now());
+
+        let result = recall(query, &self.config)?;
+
+        self.apply_reconsolidation(&result).await?;
+
+        Ok(result.matches().to_vec())
+    }
+
+    pub async fn forget(&self, id: Id) -> Result<()> {
+        self.storage.remove(id).await
+    }
+
+    pub async fn get(&self, id: Id) -> Result<Option<Trace>> {
+        self.storage.get(id).await
+    }
+
+    pub async fn all(&self) -> Result<Vec<Trace>> {
+        self.storage.all().await
+    }
+
+    pub fn len(&self) -> usize {
+        self.storage.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.storage.is_empty()
     }
 
     pub fn config(&self) -> &Config {
         &self.config
     }
-}
 
-impl Default for Hippocampus {
-    fn default() -> Self {
-        Self::new()
+    async fn apply_reconsolidation(&self, result: &RecallResult) -> Result<()> {
+        for m in result.matches() {
+            if let Some(mut trace) = self.storage.get(m.id).await? {
+                trace.accesses.push(now());
+                self.storage.put(trace).await?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -89,9 +131,9 @@ impl HippocampusBuilder {
         self
     }
 
-    pub fn build(self) -> Result<Hippocampus> {
+    pub fn build<S: Storage>(self, storage: S) -> Result<Hippocampus<S>> {
         let mut config = Config::builder();
-        
+
         if let Some(v) = self.decay_rate {
             config = config.decay_rate(v);
         }
@@ -116,7 +158,10 @@ impl HippocampusBuilder {
         if let Some(v) = self.use_temporal_spreading {
             config = config.use_temporal_spreading(v);
         }
-        
-        Ok(Hippocampus { config: config.build()? })
+
+        Ok(Hippocampus {
+            config: config.build()?,
+            storage,
+        })
     }
 }

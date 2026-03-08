@@ -46,18 +46,12 @@ pub fn compute_temporal_strength(
     base * (-config.distance_decay * distance as f64).exp()
 }
 
-pub fn create_episode_links(
-    memories: &[Trace],
-    config: &TemporalConfig,
-) -> Vec<TemporalLink> {
+pub fn create_episode_links(memories: &[Trace], config: &TemporalConfig) -> Vec<TemporalLink> {
     if memories.len() < 2 {
         return Vec::new();
     }
 
-    let mut sorted: Vec<(usize, &Trace)> = memories
-        .iter()
-        .enumerate()
-        .collect();
+    let mut sorted: Vec<(usize, &Trace)> = memories.iter().enumerate().collect();
 
     sorted.sort_by(|a, b| {
         let time_a = a.1.last_access().unwrap_or(0);
@@ -105,10 +99,7 @@ pub fn spread_temporal(
 
     let mut links_by_source: HashMap<Id, Vec<&TemporalLink>> = HashMap::new();
     for link in temporal_links {
-        links_by_source
-            .entry(link.from)
-            .or_default()
-            .push(link);
+        links_by_source.entry(link.from).or_default().push(link);
     }
 
     for (idx, trace) in memories.iter().enumerate() {
@@ -142,10 +133,10 @@ pub fn spread_temporal(
 pub fn temporal_distance(a: &Trace, b: &Trace) -> Option<usize> {
     let time_a = a.last_access()?;
     let time_b = b.last_access()?;
-    
+
     let diff_ms = (time_a as i64 - time_b as i64).unsigned_abs();
     let diff_secs = diff_ms / 1000;
-    
+
     match diff_secs {
         0..=60 => Some(1),
         61..=300 => Some(2),

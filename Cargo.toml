@@ -18,6 +18,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 approx = "0.5"
 criterion = { version = "0.5", features = ["html_reports"] }
 rand = "0.8"
+tokio = { version = "1", features = ["test-util", "macros", "rt", "rt-multi-thread"] }
 
 [profile.release]
 lto = "thin"

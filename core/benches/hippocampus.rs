@@ -1,7 +1,10 @@
 #![allow(clippy::expect_used)]
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use hippoe_core::{similarity, similarity_batch, time_decay, boost, decay::history_score, Hippocampus, Trace, Query, Id};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use hippoe_core::{
+    Hippocampus, Id, InMemoryStorage, Query, Trace, boost, decay::history_score, similarity,
+    similarity_batch, time_decay,
+};
 use rand::Rng;
 
 fn generate_embeddings(count: usize, dimensions: usize) -> Vec<Vec<f64>> {
@@ -70,7 +73,13 @@ fn bench_time_decay(c: &mut Criterion) {
             BenchmarkId::new("delta_ms", delta_ms),
             &delta_ms,
             |bench, _| {
-                bench.iter(|| black_box(time_decay(black_box(last_access), black_box(now), black_box(rate))));
+                bench.iter(|| {
+                    black_box(time_decay(
+                        black_box(last_access),
+                        black_box(now),
+                        black_box(rate),
+                    ))
+                });
             },
         );
     }
@@ -90,7 +99,13 @@ fn bench_boost(c: &mut Criterion) {
             BenchmarkId::new("delta_ms", delta_ms),
             &delta_ms,
             |bench, _| {
-                bench.iter(|| black_box(boost(black_box(accessed_at), black_box(now), black_box(cap))));
+                bench.iter(|| {
+                    black_box(boost(
+                        black_box(accessed_at),
+                        black_box(now),
+                        black_box(cap),
+                    ))
+                });
             },
         );
     }
@@ -113,7 +128,13 @@ fn bench_history_score(c: &mut Criterion) {
             BenchmarkId::new("accesses", access_count),
             &access_count,
             |bench, _| {
-                bench.iter(|| black_box(history_score(black_box(&accesses), black_box(now), black_box(rate))));
+                bench.iter(|| {
+                    black_box(history_score(
+                        black_box(&accesses),
+                        black_box(now),
+                        black_box(rate),
+                    ))
+                });
             },
         );
     }
@@ -125,7 +146,7 @@ fn bench_recall(c: &mut Criterion) {
     let mut group = c.benchmark_group("recall");
 
     for &(memory_count, dim) in &[(100, 512), (500, 512), (1000, 512), (2000, 512)] {
-        let hippoe = Hippocampus::new();
+        let hippoe = Hippocampus::new().unwrap();
         let now = 1_000_000_000_u64;
 
         let probe = generate_embeddings(1, dim).pop().unwrap();
@@ -133,9 +154,8 @@ fn bench_recall(c: &mut Criterion) {
 
         let mut query = Query::new(probe);
         for embedding in embeddings {
-            query = query.add_memory(
-                Trace::new(Id::new(), embedding).accessed(now.saturating_sub(100_000))
-            );
+            query = query
+                .add_memory(Trace::new(Id::new(), embedding).accessed(now.saturating_sub(100_000)));
         }
         query = query.now(now);
 
@@ -144,7 +164,7 @@ fn bench_recall(c: &mut Criterion) {
             BenchmarkId::new("memories", memory_count),
             &memory_count,
             |bench, _| {
-                bench.iter(|| black_box(hippoe.recall(black_box(query.clone()))));
+                bench.iter(|| black_box(hippoe.recall_with_query(black_box(query.clone()))));
             },
         );
     }
@@ -155,7 +175,10 @@ fn bench_recall(c: &mut Criterion) {
 fn bench_recall_with_spreading(c: &mut Criterion) {
     let mut group = c.benchmark_group("recall_with_spreading");
 
-    let hippoe = Hippocampus::builder().spread_depth(2).build().unwrap();
+    let hippoe = Hippocampus::builder()
+        .spread_depth(2)
+        .build(InMemoryStorage::new())
+        .unwrap();
     let dim = 512;
     let now = 1_000_000_000_u64;
 
@@ -165,9 +188,8 @@ fn bench_recall_with_spreading(c: &mut Criterion) {
 
         let mut query = Query::new(probe);
         for embedding in embeddings {
-            query = query.add_memory(
-                Trace::new(Id::new(), embedding).accessed(now.saturating_sub(100_000))
-            );
+            query = query
+                .add_memory(Trace::new(Id::new(), embedding).accessed(now.saturating_sub(100_000)));
         }
         query = query.now(now);
 
@@ -176,7 +198,7 @@ fn bench_recall_with_spreading(c: &mut Criterion) {
             BenchmarkId::new("memories", memory_count),
             &memory_count,
             |bench, _| {
-                bench.iter(|| black_box(hippoe.recall(black_box(query.clone()))));
+                bench.iter(|| black_box(hippoe.recall_with_query(black_box(query.clone()))));
             },
         );
     }

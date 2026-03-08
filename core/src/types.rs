@@ -25,6 +25,14 @@ impl std::fmt::Display for Id {
     }
 }
 
+impl std::str::FromStr for Id {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Id(Uuid::parse_str(s)?))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Emotion {
     pub valence: f64,

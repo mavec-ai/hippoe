@@ -1,18 +1,24 @@
-pub mod types;
 pub mod config;
+pub mod decay;
 pub mod error;
 pub mod hippocampus;
 pub mod memory;
 pub mod recall;
-pub mod decay;
+pub mod storage;
+pub mod types;
 
-pub use types::{Embedding, Emotion, Id, Link, LinkKind, Timestamp};
 pub use config::Config;
-pub use hippocampus::Hippocampus;
+pub use decay::{Curve, boost, history_score, time_decay};
+pub use hippocampus::{Hippocampus, HippocampusBuilder};
 pub use memory::Trace;
 pub use recall::Query;
-pub use decay::{time_decay, boost, Curve, history_score};
 pub use recall::scorer::{similarity, similarity_batch};
+pub use storage::InMemoryStorage;
+pub use storage::Storage;
+pub use types::{Embedding, Emotion, Id, Link, LinkKind, Timestamp};
+
+#[cfg(feature = "sqlite")]
+pub use storage::SqliteStorage;
 
 #[cfg(test)]
 fn make_embedding(values: &[f64]) -> Embedding {
@@ -35,7 +41,7 @@ fn test_id_generation() {
 fn test_emotion_weight() {
     let emotion = Emotion::new(0.5, 0.8);
     assert!(emotion.weight() > 0.0);
-    
+
     let neutral = Emotion::default();
     assert!(neutral.weight() < emotion.weight());
 }
@@ -43,14 +49,14 @@ fn test_emotion_weight() {
 #[test]
 fn test_time_decay() {
     let now: Timestamp = 100000;
-    
+
     let decay_recent = time_decay(90000, now, 0.5);
     let decay_old = time_decay(50000, now, 0.5);
-    
+
     assert!(decay_recent > decay_old);
     assert!(decay_recent <= 1.0);
     assert!(decay_old >= 0.0);
-    
+
     let decay_future = time_decay(110000, now, 0.5);
     assert_eq!(decay_future, 1.0);
 }
@@ -58,13 +64,13 @@ fn test_time_decay() {
 #[test]
 fn test_boost() {
     let now: Timestamp = 100000;
-    
+
     let boost_recent = boost(90000, now, 2.0);
     let boost_old = boost(50000, now, 2.0);
-    
+
     assert!(boost_recent > boost_old);
     assert!(boost_recent <= 2.0);
-    
+
     let boost_future = boost(110000, now, 2.0);
     assert_eq!(boost_future, 2.0);
 }
@@ -73,10 +79,10 @@ fn test_boost() {
 fn test_curve_exponential() {
     let curve = Curve::Exponential { rate: 0.5 };
     let now: Timestamp = 100000;
-    
+
     let decay_recent = curve.decay(90000, now);
     let decay_old = curve.decay(50000, now);
-    
+
     assert!(decay_recent > decay_old);
 }
 
@@ -84,10 +90,10 @@ fn test_curve_exponential() {
 fn test_curve_power_law() {
     let curve = Curve::PowerLaw { exponent: 0.8 };
     let now: Timestamp = 100000;
-    
+
     let decay_recent = curve.decay(90000, now);
     let decay_old = curve.decay(50000, now);
-    
+
     assert!(decay_recent > decay_old);
 }
 
@@ -95,10 +101,10 @@ fn test_curve_power_law() {
 fn test_curve_linear() {
     let curve = Curve::Linear { slope: 0.0001 };
     let now: Timestamp = 100000;
-    
+
     let decay_recent = curve.decay(90000, now);
     let decay_old = curve.decay(50000, now);
-    
+
     assert!(decay_recent > decay_old);
 }
 
@@ -106,7 +112,7 @@ fn test_curve_linear() {
 fn test_similarity_identical() {
     let a = make_embedding(&[1.0, 0.0, 0.0]);
     let b = make_embedding(&[1.0, 0.0, 0.0]);
-    
+
     let sim = similarity(&a, &b);
     assert!(sim > 0.99);
 }
@@ -115,7 +121,7 @@ fn test_similarity_identical() {
 fn test_similarity_orthogonal() {
     let a = make_embedding(&[1.0, 0.0, 0.0]);
     let b = make_embedding(&[0.0, 1.0, 0.0]);
-    
+
     let sim = similarity(&a, &b);
     assert!(sim < 0.01);
 }
@@ -124,7 +130,7 @@ fn test_similarity_orthogonal() {
 fn test_similarity_opposite() {
     let a = make_embedding(&[1.0, 0.0, 0.0]);
     let b = make_embedding(&[-1.0, 0.0, 0.0]);
-    
+
     let sim = similarity(&a, &b);
     assert!(sim < 0.01);
 }
@@ -135,11 +141,11 @@ fn test_similarity_batch() {
     let t1 = make_embedding(&[1.0, 0.0, 0.0]);
     let t2 = make_embedding(&[0.0, 1.0, 0.0]);
     let t3 = make_embedding(&[0.707, 0.707, 0.0]);
-    
+
     let targets: Vec<&[f64]> = vec![&t1, &t2, &t3];
-    
+
     let sims = similarity_batch(&probe, &targets);
-    
+
     assert_eq!(sims.len(), 3);
     assert!(sims[0] > 0.99);
     assert!(sims[1] < 0.01);
@@ -150,12 +156,12 @@ fn test_similarity_batch() {
 fn test_trace_builder() {
     let id = Id::new();
     let embedding = make_embedding(&[1.0, 2.0, 3.0]);
-    
+
     let trace = Trace::new(id, embedding.clone())
         .accessed(1000)
         .accessed(2000)
         .emotion(0.8, 0.6);
-    
+
     assert_eq!(trace.id, id);
     assert_eq!(trace.accesses.len(), 2);
     assert_eq!(trace.emotion.valence, 0.8);
@@ -167,9 +173,9 @@ fn test_trace_linking() {
     let id1 = Id::new();
     let id2 = Id::new();
     let embedding = make_embedding(&[1.0, 0.0, 0.0]);
-    
+
     let trace = Trace::new(id1, embedding).link(id2, 0.5);
-    
+
     assert_eq!(trace.outgoing.len(), 1);
     assert_eq!(*trace.outgoing.get(&id2).unwrap(), 0.5);
 }
@@ -185,7 +191,7 @@ fn test_config_builder() {
         .emotion_weight(0.2)
         .build()
         .unwrap();
-    
+
     assert_eq!(config.decay_rate, 0.3);
     assert_eq!(config.spread_depth, 3);
     assert_eq!(config.min_score, 0.05);
@@ -196,30 +202,28 @@ fn test_config_builder() {
 
 #[test]
 fn test_hippocampus_default() {
-    let hippoe = Hippocampus::new();
+    let hippoe = Hippocampus::new().unwrap();
     let config = hippoe.config();
-    
+
     assert!(config.decay_rate > 0.0);
     assert!(config.spread_depth > 0);
 }
 
 #[test]
 fn test_recall_basic() {
-    let hippoe = Hippocampus::new();
-    
+    let hippoe = Hippocampus::new().unwrap();
+
     let probe = make_embedding(&[1.0, 0.0, 0.0]);
-    let mem1 = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0]))
-        .accessed(1000);
-    let mem2 = Trace::new(Id::new(), make_embedding(&[0.1, 0.9, 0.0]))
-        .accessed(1000);
-    
+    let mem1 = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0])).accessed(1000);
+    let mem2 = Trace::new(Id::new(), make_embedding(&[0.1, 0.9, 0.0])).accessed(1000);
+
     let query = Query::new(probe)
         .add_memory(mem1)
         .add_memory(mem2)
         .now(2000);
-    
-    let result = hippoe.recall(query).unwrap();
-    
+
+    let result = hippoe.recall_with_query(query).unwrap();
+
     assert_eq!(result.len(), 2);
     assert!(result.matches()[0].score.similarity > result.matches()[1].score.similarity);
 }
@@ -228,63 +232,63 @@ fn test_recall_basic() {
 fn test_recall_with_spreading() {
     let hippoe = Hippocampus::builder()
         .spread_depth(2)
-        .build()
+        .build(InMemoryStorage::new())
         .unwrap();
 
     let id1 = Id::new();
     let id2 = Id::new();
     let id3 = Id::new();
-    
+
     let probe = make_embedding(&[1.0, 0.0, 0.0]);
     let mem1 = Trace::new(id1, make_embedding(&[0.9, 0.1, 0.0]));
     let mem2 = Trace::new(id2, make_embedding(&[0.1, 0.9, 0.0]));
     let mem3 = Trace::new(id3, make_embedding(&[0.2, 0.8, 0.0]));
-    
+
     let link = Link::semantic(id1, id2, 0.8);
-    
+
     let query = Query::new(probe)
         .add_memory(mem1)
         .add_memory(mem2)
         .add_memory(mem3)
         .add_link(link)
         .now(1000);
-    
-    let result = hippoe.recall(query).unwrap();
-    
+
+    let result = hippoe.recall_with_query(query).unwrap();
+
     assert_eq!(result.len(), 3);
 }
 
 #[test]
 fn test_recall_empty_probe_error() {
-    let hippoe = Hippocampus::new();
-    
+    let hippoe = Hippocampus::new().unwrap();
+
     let query = Query::new(Vec::new());
-    
-    let result = hippoe.recall(query);
+
+    let result = hippoe.recall_with_query(query);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_recall_no_memories_error() {
-    let hippoe = Hippocampus::new();
-    
+    let hippoe = Hippocampus::new().unwrap();
+
     let probe = make_embedding(&[1.0, 0.0, 0.0]);
     let query = Query::new(probe);
-    
-    let result = hippoe.recall(query);
+
+    let result = hippoe.recall_with_query(query);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_recall_dimension_mismatch_error() {
-    let hippoe = Hippocampus::new();
-    
+    let hippoe = Hippocampus::new().unwrap();
+
     let probe = make_embedding(&[1.0, 0.0, 0.0]);
     let mem = Trace::new(Id::new(), make_embedding(&[1.0, 0.0, 0.0, 0.0]));
-    
+
     let query = Query::new(probe).add_memory(mem);
-    
-    let result = hippoe.recall(query);
+
+    let result = hippoe.recall_with_query(query);
     assert!(result.is_err());
 }
 
@@ -292,24 +296,25 @@ fn test_recall_dimension_mismatch_error() {
 fn test_recall_with_emotion() {
     let hippoe = Hippocampus::builder()
         .emotion_weight(0.5)
-        .build()
+        .build(InMemoryStorage::new())
         .unwrap();
 
     let probe = make_embedding(&[1.0, 0.0, 0.0]);
     let mem_neutral = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0]));
-    let mem_emotional = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0]))
-        .emotion(0.9, 0.9);
-    
+    let mem_emotional = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0])).emotion(0.9, 0.9);
+
     let query = Query::new(probe.clone())
         .add_memory(mem_neutral.clone())
         .add_memory(mem_emotional.clone())
         .now(1000);
-    
-    let result = hippoe.recall(query).unwrap();
-    
-    let emotional_idx = result.matches().iter()
+
+    let result = hippoe.recall_with_query(query).unwrap();
+
+    let emotional_idx = result
+        .matches()
+        .iter()
         .position(|m| m.id == mem_emotional.id);
-    
+
     if let Some(idx) = emotional_idx {
         assert!(result.matches()[idx].score.emotion > 1.0);
     }
@@ -317,30 +322,30 @@ fn test_recall_with_emotion() {
 
 #[test]
 fn test_recall_result_methods() {
-    let hippoe = Hippocampus::new();
-    
+    let hippoe = Hippocampus::new().unwrap();
+
     let probe = make_embedding(&[1.0, 0.0, 0.0]);
     let mem1 = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0]));
     let mem2 = Trace::new(Id::new(), make_embedding(&[0.8, 0.2, 0.0]));
     let mem3 = Trace::new(Id::new(), make_embedding(&[0.1, 0.9, 0.0]));
-    
+
     let query = Query::new(probe)
         .add_memory(mem1)
         .add_memory(mem2)
         .add_memory(mem3)
         .now(1000);
-    
-    let result = hippoe.recall(query).unwrap();
-    
+
+    let result = hippoe.recall_with_query(query).unwrap();
+
     assert_eq!(result.len(), 3);
     assert!(!result.is_empty());
-    
+
     let top2 = result.top(2);
     assert_eq!(top2.len(), 2);
-    
+
     let first = result.first();
     assert!(first.is_some());
-    
+
     let ids = result.ids();
     assert_eq!(ids.len(), 3);
 }
@@ -349,41 +354,40 @@ fn test_recall_result_methods() {
 fn test_recall_with_working_memory() {
     let hippoe = Hippocampus::builder()
         .boost_cap(2.0)
-        .build()
+        .build(InMemoryStorage::new())
         .unwrap();
-    
+
     let probe = make_embedding(&[1.0, 0.0, 0.0]);
-    let mem_wm = Trace::new(Id::new(), make_embedding(&[0.7, 0.3, 0.0]))
-        .wm_accessed(900);
+    let mem_wm = Trace::new(Id::new(), make_embedding(&[0.7, 0.3, 0.0])).wm_accessed(900);
     let mem_no_wm = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0]));
-    
+
     let query = Query::new(probe)
         .add_memory(mem_wm)
         .add_memory(mem_no_wm)
         .now(1000);
-    
-    let result = hippoe.recall(query).unwrap();
-    
+
+    let result = hippoe.recall_with_query(query).unwrap();
+
     assert!(result.matches().iter().any(|m| m.score.boost > 1.0));
 }
 
 #[test]
 fn test_recall_probability_sums() {
-    let hippoe = Hippocampus::new();
-    
+    let hippoe = Hippocampus::new().unwrap();
+
     let probe = make_embedding(&[1.0, 0.0, 0.0]);
     let mem1 = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0]));
     let mem2 = Trace::new(Id::new(), make_embedding(&[0.8, 0.2, 0.0]));
     let mem3 = Trace::new(Id::new(), make_embedding(&[0.7, 0.3, 0.0]));
-    
+
     let query = Query::new(probe)
         .add_memory(mem1)
         .add_memory(mem2)
         .add_memory(mem3)
         .now(1000);
-    
-    let result = hippoe.recall(query).unwrap();
-    
+
+    let result = hippoe.recall_with_query(query).unwrap();
+
     let prob_sum: f64 = result.matches().iter().map(|m| m.probability).sum();
     assert!((prob_sum - 1.0).abs() < 0.001);
 }
@@ -392,12 +396,12 @@ fn test_recall_probability_sums() {
 fn test_link_kind() {
     let id1 = Id::new();
     let id2 = Id::new();
-    
+
     let link_semantic = Link::semantic(id1, id2, 0.5);
     let link_episodic = Link::episodic(id1, id2, 0.6);
     let link_causal = Link::causal(id1, id2, 0.7);
     let link_temporal = Link::temporal(id1, id2, 0.3);
-    
+
     assert_eq!(link_semantic.kind, LinkKind::Semantic);
     assert_eq!(link_episodic.kind, LinkKind::Episodic);
     assert_eq!(link_causal.kind, LinkKind::Causal);
@@ -408,20 +412,20 @@ fn test_link_kind() {
 fn test_min_score_filtering() {
     let hippoe = Hippocampus::builder()
         .min_score(0.5)
-        .build()
+        .build(InMemoryStorage::new())
         .unwrap();
 
     let probe = make_embedding(&[1.0, 0.0, 0.0]);
     let mem_high = Trace::new(Id::new(), make_embedding(&[0.99, 0.01, 0.0]));
     let mem_low = Trace::new(Id::new(), make_embedding(&[0.0, 0.99, 0.0]));
-    
+
     let query = Query::new(probe)
         .add_memory(mem_high)
         .add_memory(mem_low)
         .now(1000);
-    
-    let result = hippoe.recall(query).unwrap();
-    
+
+    let result = hippoe.recall_with_query(query).unwrap();
+
     for m in result.matches() {
         assert!(m.score.total >= 0.5);
     }
@@ -431,21 +435,346 @@ fn test_min_score_filtering() {
 fn test_max_results_limit() {
     let hippoe = Hippocampus::builder()
         .max_results(2)
-        .build()
+        .build(InMemoryStorage::new())
         .unwrap();
 
     let probe = make_embedding(&[1.0, 0.0, 0.0]);
     let memories: Vec<Trace> = (0..10)
-        .map(|i| Trace::new(Id::new(), make_embedding(&[0.9 - i as f64 * 0.05, 0.1, 0.0])))
+        .map(|i| {
+            Trace::new(
+                Id::new(),
+                make_embedding(&[0.9 - i as f64 * 0.05, 0.1, 0.0]),
+            )
+        })
         .collect();
-    
+
     let mut query = Query::new(probe);
     for m in memories {
         query = query.add_memory(m);
     }
     query = query.now(1000);
-    
-    let result = hippoe.recall(query).unwrap();
-    
+
+    let result = hippoe.recall_with_query(query).unwrap();
+
     assert!(result.len() <= 2);
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    use tokio::test;
+
+    #[test]
+    async fn test_inmemory_storage_basic_operations() {
+        let storage = InMemoryStorage::new();
+
+        assert!(storage.is_empty());
+        assert_eq!(storage.len(), 0);
+
+        let id = Id::new();
+        let trace = Trace::new(id, make_embedding(&[1.0, 0.0, 0.0]));
+
+        storage.put(trace.clone()).await.unwrap();
+
+        assert!(!storage.is_empty());
+        assert_eq!(storage.len(), 1);
+
+        let retrieved = storage.get(id).await.unwrap();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().id, id);
+
+        let all = storage.all().await.unwrap();
+        assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    async fn test_inmemory_storage_update() {
+        let storage = InMemoryStorage::new();
+
+        let id = Id::new();
+        let trace1 = Trace::new(id, make_embedding(&[1.0, 0.0, 0.0])).accessed(1000);
+        let trace2 = Trace::new(id, make_embedding(&[0.9, 0.1, 0.0])).accessed(2000);
+
+        storage.put(trace1).await.unwrap();
+        storage.put(trace2.clone()).await.unwrap();
+
+        assert_eq!(storage.len(), 1);
+
+        let retrieved = storage.get(id).await.unwrap().unwrap();
+        assert_eq!(retrieved.last_access(), Some(2000));
+    }
+
+    #[test]
+    async fn test_inmemory_storage_remove() {
+        let storage = InMemoryStorage::new();
+
+        let id1 = Id::new();
+        let id2 = Id::new();
+
+        storage
+            .put(Trace::new(id1, make_embedding(&[1.0, 0.0, 0.0])))
+            .await
+            .unwrap();
+        storage
+            .put(Trace::new(id2, make_embedding(&[0.0, 1.0, 0.0])))
+            .await
+            .unwrap();
+
+        assert_eq!(storage.len(), 2);
+
+        storage.remove(id1).await.unwrap();
+
+        assert_eq!(storage.len(), 1);
+        assert!(storage.get(id1).await.unwrap().is_none());
+        assert!(storage.get(id2).await.unwrap().is_some());
+    }
+
+    #[test]
+    async fn test_inmemory_storage_links() {
+        let storage = InMemoryStorage::new();
+
+        let id1 = Id::new();
+        let id2 = Id::new();
+        let id3 = Id::new();
+
+        let trace1 = Trace::new(id1, make_embedding(&[1.0, 0.0, 0.0]))
+            .link(id2, 0.8)
+            .link(id3, 0.5);
+        let trace2 = Trace::new(id2, make_embedding(&[0.0, 1.0, 0.0])).link(id3, 0.9);
+
+        storage.put(trace1).await.unwrap();
+        storage.put(trace2).await.unwrap();
+
+        let links = storage.links().await.unwrap();
+
+        assert_eq!(links.len(), 3);
+
+        let id1_links: Vec<_> = links.iter().filter(|l| l.from == id1).collect();
+        assert_eq!(id1_links.len(), 2);
+
+        let id2_links: Vec<_> = links.iter().filter(|l| l.from == id2).collect();
+        assert_eq!(id2_links.len(), 1);
+    }
+
+    #[test]
+    async fn test_inmemory_storage_multiple_traces() {
+        let storage = InMemoryStorage::new();
+
+        let count = 10;
+        for i in 0..count {
+            let id = Id::new();
+            let embedding = make_embedding(&[i as f64, 0.0, 0.0]);
+            storage.put(Trace::new(id, embedding)).await.unwrap();
+        }
+
+        assert_eq!(storage.len(), count);
+
+        let all = storage.all().await.unwrap();
+        assert_eq!(all.len(), count);
+    }
+
+    #[test]
+    async fn test_hippocampus_memorize_and_recall() {
+        let hippoe = Hippocampus::new().unwrap();
+
+        let mem1 = Trace::new(Id::new(), make_embedding(&[1.0, 0.0, 0.0]));
+        let mem2 = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0]));
+        let mem3 = Trace::new(Id::new(), make_embedding(&[0.1, 0.9, 0.0]));
+
+        hippoe.memorize(mem1.clone()).await.unwrap();
+        hippoe.memorize(mem2.clone()).await.unwrap();
+        hippoe.memorize(mem3.clone()).await.unwrap();
+
+        let probe = make_embedding(&[1.0, 0.0, 0.0]);
+        let matches = hippoe.recall(probe).await.unwrap();
+
+        assert_eq!(matches.len(), 3);
+        assert!(matches[0].score.similarity > matches[2].score.similarity);
+    }
+
+    #[test]
+    async fn test_hippocampus_with_custom_storage() {
+        let storage = InMemoryStorage::new();
+        let hippoe = Hippocampus::builder()
+            .decay_rate(0.3)
+            .spread_depth(2)
+            .build(storage)
+            .unwrap();
+
+        let mem = Trace::new(Id::new(), make_embedding(&[1.0, 0.0, 0.0])).emotion(0.8, 0.9);
+
+        hippoe.memorize(mem).await.unwrap();
+
+        let probe = make_embedding(&[0.95, 0.05, 0.0]);
+        let matches = hippoe.recall(probe).await.unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].score.emotion > 1.0);
+    }
+
+    #[test]
+    async fn test_storage_with_linked_memories() {
+        let storage = InMemoryStorage::new();
+
+        let id1 = Id::new();
+        let id2 = Id::new();
+
+        let trace1 = Trace::new(id1, make_embedding(&[1.0, 0.0, 0.0])).link(id2, 0.9);
+        let trace2 = Trace::new(id2, make_embedding(&[0.0, 1.0, 0.0]));
+
+        storage.put(trace1).await.unwrap();
+        storage.put(trace2).await.unwrap();
+
+        let links = storage.links().await.unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].from, id1);
+        assert_eq!(links[0].to, id2);
+    }
+
+    #[test]
+    async fn test_inmemory_storage_get_nonexistent() {
+        let storage = InMemoryStorage::new();
+
+        let result = storage.get(Id::new()).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    async fn test_inmemory_storage_all_empty() {
+        let storage = InMemoryStorage::new();
+
+        let all = storage.all().await.unwrap();
+        assert!(all.is_empty());
+    }
+
+    #[test]
+    async fn test_inmemory_storage_links_empty() {
+        let storage = InMemoryStorage::new();
+
+        let links = storage.links().await.unwrap();
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    async fn test_inmemory_storage_remove_nonexistent() {
+        let storage = InMemoryStorage::new();
+
+        let result = storage.remove(Id::new()).await;
+        assert!(result.is_ok());
+        assert_eq!(storage.len(), 0);
+    }
+}
+
+#[cfg(feature = "sqlite")]
+#[cfg(test)]
+mod sqlite_tests {
+    use super::*;
+    use crate::storage::SqliteStorage;
+    use tokio::test;
+
+    fn make_embedding(values: &[f64]) -> Embedding {
+        values.to_vec()
+    }
+
+    #[test]
+    async fn test_sqlite_storage_basic_operations() {
+        let storage = SqliteStorage::new_in_memory().await.unwrap();
+
+        let id = Id::new();
+        let trace = Trace::new(id, make_embedding(&[1.0, 0.0, 0.0])).accessed(1000);
+
+        assert!(storage.get(id).await.unwrap().is_none());
+
+        storage.put(trace.clone()).await.unwrap();
+
+        let retrieved = storage.get(id).await.unwrap().unwrap();
+        assert_eq!(retrieved.id, id);
+        assert_eq!(retrieved.embedding, trace.embedding);
+        assert_eq!(retrieved.last_access(), Some(1000));
+    }
+
+    #[test]
+    async fn test_sqlite_storage_update() {
+        let storage = SqliteStorage::new_in_memory().await.unwrap();
+
+        let id = Id::new();
+        let trace1 = Trace::new(id, make_embedding(&[1.0, 0.0, 0.0])).accessed(1000);
+        let trace2 = Trace::new(id, make_embedding(&[0.9, 0.1, 0.0])).accessed(2000);
+
+        storage.put(trace1).await.unwrap();
+        storage.put(trace2.clone()).await.unwrap();
+
+        let retrieved = storage.get(id).await.unwrap().unwrap();
+        assert_eq!(retrieved.last_access(), Some(2000));
+    }
+
+    #[test]
+    async fn test_sqlite_storage_remove() {
+        let storage = SqliteStorage::new_in_memory().await.unwrap();
+
+        let id1 = Id::new();
+        let id2 = Id::new();
+
+        storage
+            .put(Trace::new(id1, make_embedding(&[1.0, 0.0, 0.0])))
+            .await
+            .unwrap();
+        storage
+            .put(Trace::new(id2, make_embedding(&[0.0, 1.0, 0.0])))
+            .await
+            .unwrap();
+
+        storage.remove(id1).await.unwrap();
+
+        assert!(storage.get(id1).await.unwrap().is_none());
+        assert!(storage.get(id2).await.unwrap().is_some());
+    }
+
+    #[test]
+    async fn test_sqlite_storage_with_emotion() {
+        let storage = SqliteStorage::new_in_memory().await.unwrap();
+
+        let id = Id::new();
+        let trace = Trace::new(id, make_embedding(&[1.0, 0.0, 0.0])).emotion(0.8, 0.6);
+
+        storage.put(trace).await.unwrap();
+
+        let retrieved = storage.get(id).await.unwrap().unwrap();
+        assert!((retrieved.emotion.valence - 0.8).abs() < 0.001);
+        assert!((retrieved.emotion.arousal - 0.6).abs() < 0.001);
+    }
+
+    #[test]
+    async fn test_sqlite_storage_with_context() {
+        let storage = SqliteStorage::new_in_memory().await.unwrap();
+
+        let id = Id::new();
+        let trace =
+            Trace::new(id, make_embedding(&[1.0, 0.0, 0.0])).context("test context".to_string());
+
+        storage.put(trace).await.unwrap();
+
+        let retrieved = storage.get(id).await.unwrap().unwrap();
+        assert_eq!(retrieved.context, Some("test context".to_string()));
+    }
+
+    #[test]
+    async fn test_sqlite_storage_with_links() {
+        let storage = SqliteStorage::new_in_memory().await.unwrap();
+
+        let id1 = Id::new();
+        let id2 = Id::new();
+
+        let trace1 = Trace::new(id1, make_embedding(&[1.0, 0.0, 0.0])).link(id2, 0.8);
+
+        storage.put(trace1).await.unwrap();
+        storage
+            .put(Trace::new(id2, make_embedding(&[0.0, 1.0, 0.0])))
+            .await
+            .unwrap();
+
+        let retrieved = storage.get(id1).await.unwrap().unwrap();
+        assert_eq!(retrieved.outgoing.len(), 1);
+        assert_eq!(retrieved.outgoing.get(&id2), Some(&0.8));
+    }
 }

@@ -25,8 +25,8 @@ pub fn similarity_batch(probe: &[f64], targets: &[&[f64]]) -> Vec<f64> {
         return vec![0.0; targets.len()];
     }
 
-    let probe_norm: f64 = probe.iter().map(|x| x * x).sum::<f64>().sqrt();
-    if probe_norm == 0.0 {
+    let probe_norm_sq: f64 = probe.iter().map(|x| x * x).sum();
+    if probe_norm_sq == 0.0 {
         return vec![0.0; targets.len()];
     }
 
@@ -37,21 +37,19 @@ pub fn similarity_batch(probe: &[f64], targets: &[&[f64]]) -> Vec<f64> {
                 return 0.0;
             }
 
-            let dot: f64 = probe.iter().zip(target.iter()).map(|(p, t)| p * t).sum();
-            let target_norm: f64 = target.iter().map(|x| x * x).sum::<f64>().sqrt();
+            let (dot, target_norm_sq) = probe
+                .iter()
+                .zip(target.iter())
+                .fold((0.0, 0.0), |(d, tn), (&p, &t)| {
+                    (p.mul_add(t, d), t.mul_add(t, tn))
+                });
 
-            if target_norm == 0.0 {
+            if target_norm_sq == 0.0 {
                 return 0.0;
             }
 
-            let cos = dot / (probe_norm * target_norm);
+            let cos = dot / (probe_norm_sq * target_norm_sq).sqrt();
             cos.powi(3)
         })
         .collect()
-}
-
-#[allow(dead_code)]
-#[inline]
-pub fn probability(score: f64, temperature: f64) -> f64 {
-    (score / temperature).exp()
 }

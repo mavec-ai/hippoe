@@ -19,18 +19,18 @@ pub fn apply_reconsolidation(
 
     for (id, &idx) in id_to_idx {
         let activation = activations[idx];
-        
+
         if activation < config.theta_low || activation > config.theta_high {
             continue;
         }
 
         let trace = &mut traces[idx];
         let old_access_count = trace.accesses.len();
-        
+
         trace.accesses.push(current_time);
-        
+
         let new_access_count = trace.accesses.len();
-        
+
         updated.push((*id, old_access_count as f64, new_access_count as f64));
     }
 

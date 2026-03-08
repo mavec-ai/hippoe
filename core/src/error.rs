@@ -28,6 +28,15 @@ pub enum Error {
 
     #[error("invalid link strength: {0}")]
     InvalidLinkStrength(f64),
+
+    #[error("storage error: {0}")]
+    Storage(String),
+
+    #[error("serialization error: {0}")]
+    Serialization(String),
+
+    #[error("invalid id format")]
+    InvalidId,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

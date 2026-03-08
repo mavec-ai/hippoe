@@ -6,18 +6,16 @@ mod spread;
 pub mod temporal;
 
 pub use query::Query;
-pub use reconsolidation::{apply_reconsolidation, ReconsolidationUpdates};
+pub use reconsolidation::{ReconsolidationUpdates, apply_reconsolidation};
 pub use result::{Match, RecallResult, Scores};
 pub use scorer::{similarity, similarity_batch};
 pub use spread::spread;
-pub use temporal::{
-    create_episode_links, spread_temporal, TemporalConfig, TemporalLink,
-};
+pub use temporal::{TemporalConfig, TemporalLink, create_episode_links, spread_temporal};
 
 use crate::config::Config;
 use crate::decay::{boost, history_score};
 use crate::error;
-use crate::types::{now, Id};
+use crate::types::{Id, now};
 
 struct RecallIntermediate {
     matches: Vec<Match>,
@@ -25,10 +23,7 @@ struct RecallIntermediate {
     total_memories: usize,
 }
 
-fn recall_internal(
-    query: Query,
-    config: &Config,
-) -> error::Result<RecallIntermediate> {
+fn recall_internal(query: Query, config: &Config) -> error::Result<RecallIntermediate> {
     if query.probe.is_empty() {
         return Err(error::Error::EmptyProbe);
     }
@@ -48,7 +43,11 @@ fn recall_internal(
 
     let current_time = query.now.unwrap_or_else(now);
 
-    let embeddings: Vec<&[f64]> = query.memories.iter().map(|m| m.embedding.as_slice()).collect();
+    let embeddings: Vec<&[f64]> = query
+        .memories
+        .iter()
+        .map(|m| m.embedding.as_slice())
+        .collect();
     let similarities = similarity_batch(&query.probe, &embeddings);
 
     let id_to_idx: std::collections::HashMap<Id, usize> = query
@@ -87,8 +86,9 @@ fn recall_internal(
         .enumerate()
         .map(|(i, m)| {
             let history = history_score(&m.accesses, current_time, config.decay_rate);
-            
-            let wm_boost = m.wm_accessed_at
+
+            let wm_boost = m
+                .wm_accessed_at
                 .map(|t| boost(t, current_time, config.boost_cap))
                 .unwrap_or(1.0);
 
@@ -99,9 +99,10 @@ fn recall_internal(
                 _ => 1.0,
             };
 
-            let total = (similarities[i] + history + spread_scores[i] + temporal_scores[i] + wm_boost) 
-                * emotion_factor 
-                * context_factor;
+            let total =
+                (similarities[i] + history + spread_scores[i] + temporal_scores[i] + wm_boost)
+                    * emotion_factor
+                    * context_factor;
 
             Match {
                 id: m.id,
@@ -129,25 +130,30 @@ fn recall_internal(
     })
 }
 
-pub fn recall(
-    query: Query,
-    config: &Config,
-) -> error::Result<RecallResult> {
+pub fn recall(query: Query, config: &Config) -> error::Result<RecallResult> {
     let mut intermediate = recall_internal(query, config)?;
-    
+
     let n = config.max_results.min(intermediate.matches.len());
     if n < intermediate.matches.len() {
-        intermediate.matches.select_nth_unstable_by(n, |a, b| {
-            b.score.total.partial_cmp(&a.score.total).unwrap()
-        });
+        intermediate
+            .matches
+            .select_nth_unstable_by(n, |a, b| b.score.total.partial_cmp(&a.score.total).unwrap());
         intermediate.matches.truncate(n);
     } else {
-        intermediate.matches.sort_by(|a, b| b.score.total.partial_cmp(&a.score.total).unwrap());
+        intermediate
+            .matches
+            .sort_by(|a, b| b.score.total.partial_cmp(&a.score.total).unwrap());
     }
-    
-    intermediate.matches.retain(|m| m.score.total >= config.min_score);
 
-    let exp_scores: Vec<f64> = intermediate.matches.iter().map(|m| m.score.total.exp()).collect();
+    intermediate
+        .matches
+        .retain(|m| m.score.total >= config.min_score);
+
+    let exp_scores: Vec<f64> = intermediate
+        .matches
+        .iter()
+        .map(|m| m.score.total.exp())
+        .collect();
     let prob_total: f64 = exp_scores.iter().sum();
     for (m, exp_score) in intermediate.matches.iter_mut().zip(exp_scores.iter()) {
         m.probability = exp_score / prob_total;
@@ -165,7 +171,7 @@ pub fn recall_with_reconsolidation(
 ) -> error::Result<(RecallResult, ReconsolidationUpdates)> {
     let current_time = query.now.unwrap_or_else(now);
     let intermediate = recall_internal(query.clone(), config)?;
-    
+
     let id_to_idx: std::collections::HashMap<Id, usize> = query
         .memories
         .iter()
@@ -184,24 +190,35 @@ pub fn recall_with_reconsolidation(
     let mut intermediate = intermediate;
     let n = config.max_results.min(intermediate.matches.len());
     if n < intermediate.matches.len() {
-        intermediate.matches.select_nth_unstable_by(n, |a, b| {
-            b.score.total.partial_cmp(&a.score.total).unwrap()
-        });
+        intermediate
+            .matches
+            .select_nth_unstable_by(n, |a, b| b.score.total.partial_cmp(&a.score.total).unwrap());
         intermediate.matches.truncate(n);
     } else {
-        intermediate.matches.sort_by(|a, b| b.score.total.partial_cmp(&a.score.total).unwrap());
+        intermediate
+            .matches
+            .sort_by(|a, b| b.score.total.partial_cmp(&a.score.total).unwrap());
     }
-    
-    intermediate.matches.retain(|m| m.score.total >= config.min_score);
 
-    let exp_scores: Vec<f64> = intermediate.matches.iter().map(|m| m.score.total.exp()).collect();
+    intermediate
+        .matches
+        .retain(|m| m.score.total >= config.min_score);
+
+    let exp_scores: Vec<f64> = intermediate
+        .matches
+        .iter()
+        .map(|m| m.score.total.exp())
+        .collect();
     let prob_total: f64 = exp_scores.iter().sum();
     for (m, exp_score) in intermediate.matches.iter_mut().zip(exp_scores.iter()) {
         m.probability = exp_score / prob_total;
     }
 
-    Ok((RecallResult {
-        matches: intermediate.matches,
-        total_memories: intermediate.total_memories,
-    }, reconsolidation_updates))
+    Ok((
+        RecallResult {
+            matches: intermediate.matches,
+            total_memories: intermediate.total_memories,
+        },
+        reconsolidation_updates,
+    ))
 }
