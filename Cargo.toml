@@ -3,7 +3,7 @@ resolver = "3"
 members = ["core"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Deni Andreawan Kusuma"]
 license = "Apache-2.0"
@@ -18,7 +18,12 @@ uuid = { version = "1", features = ["v4", "serde"] }
 approx = "0.5"
 criterion = { version = "0.5", features = ["html_reports"] }
 rand = "0.8"
-tokio = { version = "1", features = ["test-util", "macros", "rt", "rt-multi-thread"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "test-util", "macros"] }
+async-trait = "0.1"
+bincode = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"] }
+futures = "0.3"
 
 [profile.release]
 lto = "thin"

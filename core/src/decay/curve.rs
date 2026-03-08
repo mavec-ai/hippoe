@@ -27,3 +27,41 @@ impl Default for Curve {
         Curve::Exponential { rate: 0.5 }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_curve_exponential() {
+        let curve = Curve::Exponential { rate: 0.5 };
+        let now: Timestamp = 100000;
+
+        let decay_recent = curve.decay(90000, now);
+        let decay_old = curve.decay(50000, now);
+
+        assert!(decay_recent > decay_old);
+    }
+
+    #[test]
+    fn test_curve_power_law() {
+        let curve = Curve::PowerLaw { exponent: 0.8 };
+        let now: Timestamp = 100000;
+
+        let decay_recent = curve.decay(90000, now);
+        let decay_old = curve.decay(50000, now);
+
+        assert!(decay_recent > decay_old);
+    }
+
+    #[test]
+    fn test_curve_linear() {
+        let curve = Curve::Linear { slope: 0.0001 };
+        let now: Timestamp = 100000;
+
+        let decay_recent = curve.decay(90000, now);
+        let decay_old = curve.decay(50000, now);
+
+        assert!(decay_recent > decay_old);
+    }
+}

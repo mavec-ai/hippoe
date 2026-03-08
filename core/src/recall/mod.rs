@@ -222,3 +222,214 @@ pub fn recall_with_reconsolidation(
         reconsolidation_updates,
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::Trace;
+    use crate::types::Link;
+
+    fn make_embedding(values: &[f64]) -> crate::types::Embedding {
+        let norm: f64 = values.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm > 0.0 {
+            values.iter().map(|x| x / norm).collect()
+        } else {
+            values.to_vec()
+        }
+    }
+
+    #[test]
+    fn test_recall_basic() {
+        let config = Config::default();
+        let probe = make_embedding(&[1.0, 0.0, 0.0]);
+        let mem1 = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0])).accessed(1000);
+        let mem2 = Trace::new(Id::new(), make_embedding(&[0.1, 0.9, 0.0])).accessed(1000);
+
+        let query = Query::new(probe)
+            .add_memory(mem1)
+            .add_memory(mem2)
+            .now(2000);
+
+        let result = recall(query, &config).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.matches()[0].score.similarity > result.matches()[1].score.similarity);
+    }
+
+    #[test]
+    fn test_recall_with_spreading() {
+        let config = Config::default();
+        let id1 = Id::new();
+        let id2 = Id::new();
+        let id3 = Id::new();
+
+        let probe = make_embedding(&[1.0, 0.0, 0.0]);
+        let mem1 = Trace::new(id1, make_embedding(&[0.9, 0.1, 0.0]));
+        let mem2 = Trace::new(id2, make_embedding(&[0.1, 0.9, 0.0]));
+        let mem3 = Trace::new(id3, make_embedding(&[0.2, 0.8, 0.0]));
+
+        let link = Link::semantic(id1, id2, 0.8);
+
+        let query = Query::new(probe)
+            .add_memory(mem1)
+            .add_memory(mem2)
+            .add_memory(mem3)
+            .add_link(link)
+            .now(1000);
+
+        let result = recall(query, &config).unwrap();
+
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_recall_empty_probe_error() {
+        let config = Config::default();
+        let query = Query::new(Vec::new());
+
+        let result = recall(query, &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_recall_no_memories_error() {
+        let config = Config::default();
+        let probe = make_embedding(&[1.0, 0.0, 0.0]);
+        let query = Query::new(probe);
+
+        let result = recall(query, &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_recall_dimension_mismatch_error() {
+        let config = Config::default();
+        let probe = make_embedding(&[1.0, 0.0, 0.0]);
+        let mem = Trace::new(Id::new(), make_embedding(&[1.0, 0.0, 0.0, 0.0]));
+
+        let query = Query::new(probe).add_memory(mem);
+
+        let result = recall(query, &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_recall_with_emotion() {
+        let config = Config {
+            emotion_weight: 0.5,
+            ..Config::default()
+        };
+
+        let probe = make_embedding(&[1.0, 0.0, 0.0]);
+        let mem_neutral = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0]));
+        let mem_emotional = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0])).emotion(0.9, 0.9);
+
+        let query = Query::new(probe.clone())
+            .add_memory(mem_neutral.clone())
+            .add_memory(mem_emotional.clone())
+            .now(1000);
+
+        let result = recall(query, &config).unwrap();
+
+        let emotional_idx = result
+            .matches()
+            .iter()
+            .position(|m| m.id == mem_emotional.id);
+
+        if let Some(idx) = emotional_idx {
+            assert!(result.matches()[idx].score.emotion > 1.0);
+        }
+    }
+
+    #[test]
+    fn test_recall_with_working_memory() {
+        let config = Config {
+            boost_cap: 2.0,
+            ..Config::default()
+        };
+
+        let probe = make_embedding(&[1.0, 0.0, 0.0]);
+        let mem_wm = Trace::new(Id::new(), make_embedding(&[0.7, 0.3, 0.0])).wm_accessed(900);
+        let mem_no_wm = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0]));
+
+        let query = Query::new(probe)
+            .add_memory(mem_wm)
+            .add_memory(mem_no_wm)
+            .now(1000);
+
+        let result = recall(query, &config).unwrap();
+
+        assert!(result.matches().iter().any(|m| m.score.boost > 1.0));
+    }
+
+    #[test]
+    fn test_recall_probability_sums() {
+        let config = Config::default();
+        let probe = make_embedding(&[1.0, 0.0, 0.0]);
+        let mem1 = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0]));
+        let mem2 = Trace::new(Id::new(), make_embedding(&[0.8, 0.2, 0.0]));
+        let mem3 = Trace::new(Id::new(), make_embedding(&[0.7, 0.3, 0.0]));
+
+        let query = Query::new(probe)
+            .add_memory(mem1)
+            .add_memory(mem2)
+            .add_memory(mem3)
+            .now(1000);
+
+        let result = recall(query, &config).unwrap();
+
+        let prob_sum: f64 = result.matches().iter().map(|m| m.probability).sum();
+        assert!((prob_sum - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_min_score_filtering() {
+        let config = Config {
+            min_score: 0.5,
+            ..Config::default()
+        };
+
+        let probe = make_embedding(&[1.0, 0.0, 0.0]);
+        let mem_high = Trace::new(Id::new(), make_embedding(&[0.99, 0.01, 0.0]));
+        let mem_low = Trace::new(Id::new(), make_embedding(&[0.0, 0.99, 0.0]));
+
+        let query = Query::new(probe)
+            .add_memory(mem_high)
+            .add_memory(mem_low)
+            .now(1000);
+
+        let result = recall(query, &config).unwrap();
+
+        for m in result.matches() {
+            assert!(m.score.total >= 0.5);
+        }
+    }
+
+    #[test]
+    fn test_max_results_limit() {
+        let config = Config {
+            max_results: 2,
+            ..Config::default()
+        };
+
+        let probe = make_embedding(&[1.0, 0.0, 0.0]);
+        let memories: Vec<Trace> = (0..10)
+            .map(|i| {
+                Trace::new(
+                    Id::new(),
+                    make_embedding(&[0.9 - i as f64 * 0.05, 0.1, 0.0]),
+                )
+            })
+            .collect();
+
+        let mut query = Query::new(probe);
+        for m in memories {
+            query = query.add_memory(m);
+        }
+        query = query.now(1000);
+
+        let result = recall(query, &config).unwrap();
+
+        assert!(result.len() <= 2);
+    }
+}

@@ -11,24 +11,23 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
-async-trait = "0.1"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync"] }
-bincode = { version = "1", optional = true }
-sqlx = { version = "0.8", features = ["runtime-tokio"], optional = true }
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
-futures = { version = "0.3", optional = true }
-
-[features]
-default = []
-sqlite = ["dep:sqlx", "sqlx/sqlite", "bincode"]
-redis = ["dep:redis", "bincode", "futures"]
-postgres = ["dep:sqlx", "sqlx/postgres", "bincode"]
+async-trait = { workspace = true }
+tokio = { workspace = true }
+bincode = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
+redis = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
-tokio = { workspace = true }
+
+[features]
+default = []
+sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:bincode"]
+redis = ["dep:redis", "dep:bincode", "dep:futures"]
+postgres = ["dep:sqlx", "sqlx/postgres", "dep:bincode"]
 
 [[bench]]
 name = "hippocampus"

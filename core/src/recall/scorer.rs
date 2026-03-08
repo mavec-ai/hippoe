@@ -53,3 +53,61 @@ pub fn similarity_batch(probe: &[f64], targets: &[&[f64]]) -> Vec<f64> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_embedding(values: &[f64]) -> crate::types::Embedding {
+        let norm: f64 = values.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm > 0.0 {
+            values.iter().map(|x| x / norm).collect()
+        } else {
+            values.to_vec()
+        }
+    }
+
+    #[test]
+    fn test_similarity_identical() {
+        let a = make_embedding(&[1.0, 0.0, 0.0]);
+        let b = make_embedding(&[1.0, 0.0, 0.0]);
+
+        let sim = similarity(&a, &b);
+        assert!(sim > 0.99);
+    }
+
+    #[test]
+    fn test_similarity_orthogonal() {
+        let a = make_embedding(&[1.0, 0.0, 0.0]);
+        let b = make_embedding(&[0.0, 1.0, 0.0]);
+
+        let sim = similarity(&a, &b);
+        assert!(sim < 0.01);
+    }
+
+    #[test]
+    fn test_similarity_opposite() {
+        let a = make_embedding(&[1.0, 0.0, 0.0]);
+        let b = make_embedding(&[-1.0, 0.0, 0.0]);
+
+        let sim = similarity(&a, &b);
+        assert!(sim < 0.01);
+    }
+
+    #[test]
+    fn test_similarity_batch() {
+        let probe = make_embedding(&[1.0, 0.0, 0.0]);
+        let t1 = make_embedding(&[1.0, 0.0, 0.0]);
+        let t2 = make_embedding(&[0.0, 1.0, 0.0]);
+        let t3 = make_embedding(&[0.707, 0.707, 0.0]);
+
+        let targets: Vec<&[f64]> = vec![&t1, &t2, &t3];
+
+        let sims = similarity_batch(&probe, &targets);
+
+        assert_eq!(sims.len(), 3);
+        assert!(sims[0] > 0.99);
+        assert!(sims[1] < 0.01);
+        assert!(sims[2] > 0.3 && sims[2] < 0.5);
+    }
+}

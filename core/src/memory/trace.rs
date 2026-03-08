@@ -128,3 +128,45 @@ impl Builder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_embedding(values: &[f64]) -> Embedding {
+        let norm: f64 = values.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm > 0.0 {
+            values.iter().map(|x| x / norm).collect()
+        } else {
+            values.to_vec()
+        }
+    }
+
+    #[test]
+    fn test_trace_builder() {
+        let id = Id::new();
+        let embedding = make_embedding(&[1.0, 2.0, 3.0]);
+
+        let trace = Trace::new(id, embedding.clone())
+            .accessed(1000)
+            .accessed(2000)
+            .emotion(0.8, 0.6);
+
+        assert_eq!(trace.id, id);
+        assert_eq!(trace.accesses.len(), 2);
+        assert_eq!(trace.emotion.valence, 0.8);
+        assert_eq!(trace.emotion.arousal, 0.6);
+    }
+
+    #[test]
+    fn test_trace_linking() {
+        let id1 = Id::new();
+        let id2 = Id::new();
+        let embedding = make_embedding(&[1.0, 0.0, 0.0]);
+
+        let trace = Trace::new(id1, embedding).link(id2, 0.5);
+
+        assert_eq!(trace.outgoing.len(), 1);
+        assert_eq!(*trace.outgoing.get(&id2).unwrap(), 0.5);
+    }
+}

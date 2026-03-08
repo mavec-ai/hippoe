@@ -165,3 +165,132 @@ impl HippocampusBuilder {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_embedding(values: &[f64]) -> crate::types::Embedding {
+        let norm: f64 = values.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm > 0.0 {
+            values.iter().map(|x| x / norm).collect()
+        } else {
+            values.to_vec()
+        }
+    }
+
+    #[test]
+    fn test_hippocampus_default() {
+        let hippoe = Hippocampus::new().unwrap();
+        let config = hippoe.config();
+
+        assert!(config.decay_rate > 0.0);
+        assert!(config.spread_depth > 0);
+    }
+
+    #[tokio::test]
+    async fn test_hippocampus_memorize_and_recall() {
+        let hippoe = Hippocampus::new().unwrap();
+
+        let mem1 = Trace::new(Id::new(), make_embedding(&[1.0, 0.0, 0.0]));
+        let mem2 = Trace::new(Id::new(), make_embedding(&[0.9, 0.1, 0.0]));
+        let mem3 = Trace::new(Id::new(), make_embedding(&[0.1, 0.9, 0.0]));
+
+        hippoe.memorize(mem1.clone()).await.unwrap();
+        hippoe.memorize(mem2.clone()).await.unwrap();
+        hippoe.memorize(mem3.clone()).await.unwrap();
+
+        let probe = make_embedding(&[1.0, 0.0, 0.0]);
+        let matches = hippoe.recall(probe).await.unwrap();
+
+        assert_eq!(matches.len(), 3);
+        assert!(matches[0].score.similarity > matches[2].score.similarity);
+    }
+
+    #[tokio::test]
+    async fn test_hippocampus_with_custom_storage() {
+        let storage = InMemoryStorage::new();
+        let hippoe = Hippocampus::builder()
+            .decay_rate(0.3)
+            .spread_depth(2)
+            .build(storage)
+            .unwrap();
+
+        let mem = Trace::new(Id::new(), make_embedding(&[1.0, 0.0, 0.0])).emotion(0.8, 0.9);
+
+        hippoe.memorize(mem).await.unwrap();
+
+        let probe = make_embedding(&[0.95, 0.05, 0.0]);
+        let matches = hippoe.recall(probe).await.unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].score.emotion > 1.0);
+    }
+
+    #[tokio::test]
+    async fn test_hippocampus_forget() {
+        let hippoe = Hippocampus::new().unwrap();
+
+        let id = Id::new();
+        let mem = Trace::new(id, make_embedding(&[1.0, 0.0, 0.0]));
+
+        hippoe.memorize(mem).await.unwrap();
+        assert_eq!(hippoe.len(), 1);
+
+        hippoe.forget(id).await.unwrap();
+        assert_eq!(hippoe.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_hippocampus_get() {
+        let hippoe = Hippocampus::new().unwrap();
+
+        let id = Id::new();
+        let mem = Trace::new(id, make_embedding(&[1.0, 0.0, 0.0])).emotion(0.8, 0.6);
+
+        hippoe.memorize(mem.clone()).await.unwrap();
+
+        let retrieved = hippoe.get(id).await.unwrap().unwrap();
+        assert_eq!(retrieved.id, id);
+        assert_eq!(retrieved.emotion.valence, 0.8);
+    }
+
+    #[tokio::test]
+    async fn test_hippocampus_all() {
+        let hippoe = Hippocampus::new().unwrap();
+
+        let mem1 = Trace::new(Id::new(), make_embedding(&[1.0, 0.0, 0.0]));
+        let mem2 = Trace::new(Id::new(), make_embedding(&[0.0, 1.0, 0.0]));
+
+        hippoe.memorize(mem1).await.unwrap();
+        hippoe.memorize(mem2).await.unwrap();
+
+        let all = hippoe.all().await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_hippocampus_builder() {
+        let hippoe = Hippocampus::builder()
+            .decay_rate(0.3)
+            .spread_depth(3)
+            .min_score(0.05)
+            .max_results(20)
+            .boost_cap(1.5)
+            .emotion_weight(0.2)
+            .context_weight(0.15)
+            .use_temporal_spreading(true)
+            .build(InMemoryStorage::new())
+            .unwrap();
+
+        let config = hippoe.config();
+        assert_eq!(config.decay_rate, 0.3);
+        assert_eq!(config.spread_depth, 3);
+        assert_eq!(config.min_score, 0.05);
+        assert_eq!(config.max_results, 20);
+        assert_eq!(config.boost_cap, 1.5);
+        assert_eq!(config.emotion_weight, 0.2);
+        assert_eq!(config.context_weight, 0.15);
+        assert!(config.use_temporal_spreading);
+    }
+}

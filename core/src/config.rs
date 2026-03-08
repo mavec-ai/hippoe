@@ -160,3 +160,66 @@ impl ConfigBuilder {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_defaults() {
+        let config = Config::default();
+
+        assert_eq!(config.decay_rate, 0.5);
+        assert_eq!(config.spread_depth, 2);
+        assert_eq!(config.min_score, 0.01);
+        assert_eq!(config.max_results, 10);
+        assert_eq!(config.boost_cap, 2.0);
+        assert_eq!(config.emotion_weight, 0.3);
+        assert_eq!(config.context_weight, 0.5);
+        assert!(config.use_temporal_spreading);
+    }
+
+    #[test]
+    fn test_config_builder_valid() {
+        let config = Config::builder()
+            .decay_rate(0.8)
+            .spread_depth(3)
+            .min_score(0.05)
+            .max_results(20)
+            .build()
+            .unwrap();
+
+        assert_eq!(config.decay_rate, 0.8);
+        assert_eq!(config.spread_depth, 3);
+        assert_eq!(config.min_score, 0.05);
+        assert_eq!(config.max_results, 20);
+    }
+
+    #[test]
+    fn test_config_builder_invalid_decay_rate() {
+        let result = Config::builder().decay_rate(-0.1).build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_builder_invalid_min_score() {
+        let result = Config::builder().min_score(-0.5).build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_builder_invalid_boost_cap() {
+        let result = Config::builder().boost_cap(0.5).build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_reconsolidation_config_defaults() {
+        let config = ReconsolidationConfig::default();
+
+        assert_eq!(config.theta_low, 0.1);
+        assert_eq!(config.theta_high, 0.5);
+        assert_eq!(config.beta, 2.0);
+        assert!(config.enabled);
+    }
+}

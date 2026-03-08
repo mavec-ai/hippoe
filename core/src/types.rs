@@ -110,3 +110,40 @@ pub fn now() -> Timestamp {
         .unwrap()
         .as_millis() as Timestamp
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_id_generation() {
+        let id1 = Id::new();
+        let id2 = Id::new();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_emotion_weight() {
+        let emotion = Emotion::new(0.5, 0.8);
+        assert!(emotion.weight() > 0.0);
+
+        let neutral = Emotion::default();
+        assert!(neutral.weight() < emotion.weight());
+    }
+
+    #[test]
+    fn test_link_kind() {
+        let id1 = Id::new();
+        let id2 = Id::new();
+
+        let link_semantic = Link::semantic(id1, id2, 0.5);
+        let link_episodic = Link::episodic(id1, id2, 0.6);
+        let link_causal = Link::causal(id1, id2, 0.7);
+        let link_temporal = Link::temporal(id1, id2, 0.3);
+
+        assert_eq!(link_semantic.kind, LinkKind::Semantic);
+        assert_eq!(link_episodic.kind, LinkKind::Episodic);
+        assert_eq!(link_causal.kind, LinkKind::Causal);
+        assert_eq!(link_temporal.kind, LinkKind::Temporal);
+    }
+}
