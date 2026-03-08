@@ -1,0 +1,33 @@
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("empty probe embedding")]
+    EmptyProbe,
+
+    #[error("no memories provided")]
+    NoMemories,
+
+    #[error("embedding dimension mismatch: expected {expected}, got {actual}")]
+    DimensionMismatch { expected: usize, actual: usize },
+
+    #[error("invalid decay rate: {0} (must be > 0)")]
+    InvalidDecayRate(f64),
+
+    #[error("invalid min_score: {0} (must be >= 0)")]
+    InvalidMinScore(f64),
+
+    #[error("invalid boost_cap: {0} (must be >= 1.0)")]
+    InvalidBoostCap(f64),
+
+    #[error("invalid emotion_weight: {0} (must be >= 0)")]
+    InvalidEmotionWeight(f64),
+
+    #[error("invalid context_weight: {0} (must be >= 0)")]
+    InvalidContextWeight(f64),
+
+    #[error("invalid link strength: {0}")]
+    InvalidLinkStrength(f64),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
