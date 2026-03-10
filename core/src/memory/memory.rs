@@ -1,0 +1,740 @@
+use serde::{Deserialize, Serialize};
+
+use crate::types::{Embedding, Emotion, Id, LinkKind, Timestamp};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemporalContext {
+    pub context_vector: Embedding,
+    pub drift_rate: f64,
+    pub integration_rate: f64,
+}
+
+impl TemporalContext {
+    pub fn new(dimensions: usize) -> Self {
+        Self {
+            context_vector: vec![0.0; dimensions],
+            drift_rate: 0.7,
+            integration_rate: 0.3,
+        }
+    }
+
+    pub fn from_embedding(embedding: &[f64]) -> Self {
+        Self {
+            context_vector: embedding.to_vec(),
+            drift_rate: 0.7,
+            integration_rate: 0.3,
+        }
+    }
+
+    pub fn update(&mut self, item_embedding: &[f64]) {
+        if item_embedding.len() != self.context_vector.len() {
+            return;
+        }
+        
+        for (ctx, item) in self.context_vector.iter_mut().zip(item_embedding.iter()) {
+            *ctx = self.drift_rate * *ctx + self.integration_rate * *item;
+        }
+        
+        let norm: f64 = self.context_vector.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm > 0.0 {
+            for x in &mut self.context_vector {
+                *x /= norm;
+            }
+        }
+    }
+
+    pub fn similarity(&self, other_context: &TemporalContext) -> f64 {
+        if self.context_vector.len() != other_context.context_vector.len() {
+            return 0.0;
+        }
+
+        let dot_product: f64 = self.context_vector
+            .iter()
+            .zip(other_context.context_vector.iter())
+            .map(|(a, b)| a * b)
+            .sum();
+        
+        let norm_a: f64 = self.context_vector.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let norm_b: f64 = other_context.context_vector.iter().map(|x| x * x).sum::<f64>().sqrt();
+
+        if norm_a > 0.0 && norm_b > 0.0 {
+            (dot_product / (norm_a * norm_b)).max(0.0)
+        } else {
+            0.0
+        }
+    }
+
+    pub fn similarity_to_embedding(&self, embedding: &[f64]) -> f64 {
+        if self.context_vector.len() != embedding.len() {
+            return 0.0;
+        }
+
+        let dot_product: f64 = self.context_vector
+            .iter()
+            .zip(embedding.iter())
+            .map(|(a, b)| a * b)
+            .sum();
+        
+        let norm_a: f64 = self.context_vector.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let norm_b: f64 = embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
+
+        if norm_a > 0.0 && norm_b > 0.0 {
+            (dot_product / (norm_a * norm_b)).max(0.0)
+        } else {
+            0.0
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Memory {
+    pub id: Id,
+    pub content: MemoryContent,
+    pub embedding: Embedding,
+    pub metadata: MemoryMetadata,
+    pub associations: Vec<Association>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryContent {
+    pub text: Option<String>,
+    pub structured: Option<serde_json::Value>,
+    pub raw: Option<Vec<u8>>,
+}
+
+impl MemoryContent {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: Some(text.into()),
+            structured: None,
+            raw: None,
+        }
+    }
+
+    pub fn structured(data: serde_json::Value) -> Self {
+        Self {
+            text: None,
+            structured: Some(data),
+            raw: None,
+        }
+    }
+
+    pub fn raw(data: Vec<u8>) -> Self {
+        Self {
+            text: None,
+            structured: None,
+            raw: Some(data),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_none() && self.structured.is_none() && self.raw.is_none()
+    }
+
+    pub fn to_string(&self) -> Option<String> {
+        self.text.clone().or_else(|| self.structured.as_ref().map(|s| s.to_string()))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryMetadata {
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    pub last_accessed_at: Timestamp,
+    pub access_count: u64,
+    pub access_timestamps: Vec<Timestamp>,
+    pub emotional_weight: Emotion,
+    pub decay_rate: f64,
+    pub importance: f64,
+    pub context: Option<String>,
+    pub tags: Vec<String>,
+    pub lability: f64,
+    pub consolidation_threshold: f64,
+}
+
+impl MemoryMetadata {
+    pub fn new(created_at: Timestamp) -> Self {
+        Self {
+            created_at,
+            updated_at: created_at,
+            last_accessed_at: created_at,
+            access_count: 0,
+            access_timestamps: vec![created_at],
+            emotional_weight: Emotion::default(),
+            decay_rate: 0.1,
+            importance: 0.5,
+            context: None,
+            tags: Vec::new(),
+            lability: 1.0,
+            consolidation_threshold: 0.3,
+        }
+    }
+
+    pub fn accessed(&mut self, at: Timestamp) {
+        self.access_count += 1;
+        self.last_accessed_at = at;
+        self.access_timestamps.push(at);
+    }
+
+    pub fn with_emotion(mut self, valence: f64, arousal: f64) -> Self {
+        self.emotional_weight = Emotion::new(valence, arousal);
+        self
+    }
+
+    pub fn with_decay_rate(mut self, rate: f64) -> Self {
+        self.decay_rate = rate.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn with_importance(mut self, importance: f64) -> Self {
+        self.importance = importance.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn with_context(mut self, context: impl Into<String>) -> Self {
+        self.context = Some(context.into());
+        self
+    }
+
+    pub fn add_tag(&mut self, tag: impl Into<String>) {
+        let tag = tag.into();
+        if !self.tags.contains(&tag) {
+            self.tags.push(tag);
+        }
+    }
+
+    pub fn remove_tag(&mut self, tag: &str) {
+        self.tags.retain(|t| t != tag);
+    }
+
+    pub fn base_level_activation(&self, current_time: Timestamp) -> f64 {
+        let access_boost = (self.access_count as f64 + 1.0).ln();
+        
+        let mean_time_since_access = if !self.access_timestamps.is_empty() {
+            let sum: f64 = self.access_timestamps
+                .iter()
+                .map(|&t| (current_time.saturating_sub(t) as f64 / 1000.0).max(1.0))
+                .sum();
+            sum / self.access_timestamps.len() as f64
+        } else {
+            (current_time.saturating_sub(self.created_at) as f64 / 1000.0).max(1.0)
+        };
+        
+        let time_penalty = self.decay_rate * mean_time_since_access.ln();
+        
+        let base = access_boost - time_penalty;
+        
+        (base * self.importance).max(0.0)
+    }
+
+    pub fn base_level_activation_legacy(&self, current_time: Timestamp) -> f64 {
+        let time_since_creation = current_time.saturating_sub(self.created_at) as f64 / 1000.0;
+        let decay = (-self.decay_rate * time_since_creation).exp();
+        
+        if self.access_count == 0 {
+            return decay * 0.5 * self.importance;
+        }
+        
+        let access_boost = 1.0 + (self.access_count as f64).ln();
+        
+        decay * access_boost * self.importance
+    }
+
+    pub fn compute_surprise(&self, expected_embedding: &[f64], actual_embedding: &[f64]) -> f64 {
+        if expected_embedding.len() != actual_embedding.len() {
+            return 1.0;
+        }
+        
+        let dot_product: f64 = expected_embedding
+            .iter()
+            .zip(actual_embedding.iter())
+            .map(|(a, b)| a * b)
+            .sum();
+        
+        let norm_a: f64 = expected_embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let norm_b: f64 = actual_embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
+        
+        if norm_a > 0.0 && norm_b > 0.0 {
+            let similarity = (dot_product / (norm_a * norm_b)).clamp(0.0, 1.0);
+            1.0 - similarity
+        } else {
+            1.0
+        }
+    }
+
+    pub fn should_reconsolidate(&self, surprise: f64) -> bool {
+        surprise > self.consolidation_threshold
+    }
+
+    pub fn apply_reconsolidation(&mut self) {
+        self.lability *= 0.9;
+        self.lability = self.lability.max(0.1);
+    }
+
+    pub fn emotional_modulation(&self) -> f64 {
+        self.emotional_weight.weight() * self.importance
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Association {
+    pub target_id: Id,
+    pub strength: f64,
+    pub kind: LinkKind,
+    pub created_at: Timestamp,
+    pub last_activated: Timestamp,
+    pub activation_count: u64,
+}
+
+impl Association {
+    pub fn new(target_id: Id, strength: f64, kind: LinkKind, created_at: Timestamp) -> Self {
+        Self {
+            target_id,
+            strength: strength.clamp(0.0, 1.0),
+            kind,
+            created_at,
+            last_activated: created_at,
+            activation_count: 0,
+        }
+    }
+
+    pub fn semantic(target_id: Id, strength: f64, created_at: Timestamp) -> Self {
+        Self::new(target_id, strength, LinkKind::Semantic, created_at)
+    }
+
+    pub fn episodic(target_id: Id, strength: f64, created_at: Timestamp) -> Self {
+        Self::new(target_id, strength, LinkKind::Episodic, created_at)
+    }
+
+    pub fn causal(target_id: Id, strength: f64, created_at: Timestamp) -> Self {
+        Self::new(target_id, strength, LinkKind::Causal, created_at)
+    }
+
+    pub fn temporal(target_id: Id, strength: f64, created_at: Timestamp) -> Self {
+        Self::new(target_id, strength, LinkKind::Temporal, created_at)
+    }
+
+    pub fn activate(&mut self, at: Timestamp) {
+        self.last_activated = at;
+        self.activation_count += 1;
+    }
+
+    pub fn decay(&mut self, current_time: Timestamp, decay_rate: f64) {
+        let time_since_activation = current_time.saturating_sub(self.last_activated) as f64 / 1000.0;
+        let decay_factor = (-decay_rate * time_since_activation).exp();
+        self.strength *= decay_factor;
+    }
+}
+
+impl Memory {
+    pub fn new(content: MemoryContent, embedding: Embedding, created_at: Timestamp) -> Self {
+        Self {
+            id: Id::new(),
+            content,
+            embedding,
+            metadata: MemoryMetadata::new(created_at),
+            associations: Vec::new(),
+        }
+    }
+
+    pub fn text(text: impl Into<String>, embedding: Embedding, created_at: Timestamp) -> Self {
+        Self::new(MemoryContent::text(text), embedding, created_at)
+    }
+
+    pub fn structured(
+        data: serde_json::Value,
+        embedding: Embedding,
+        created_at: Timestamp,
+    ) -> Self {
+        Self::new(MemoryContent::structured(data), embedding, created_at)
+    }
+
+    pub fn accessed(&mut self, at: Timestamp) {
+        self.metadata.accessed(at);
+    }
+
+    pub fn add_association(&mut self, association: Association) {
+        if let Some(existing) = self
+            .associations
+            .iter_mut()
+            .find(|a| a.target_id == association.target_id && a.kind == association.kind)
+        {
+            existing.strength = (existing.strength + association.strength).min(1.0);
+            existing.activate(association.last_activated);
+        } else {
+            self.associations.push(association);
+        }
+    }
+
+    pub fn remove_association(&mut self, target_id: Id, kind: LinkKind) {
+        self.associations
+            .retain(|a| !(a.target_id == target_id && a.kind == kind));
+    }
+
+    pub fn get_association(&self, target_id: Id, kind: LinkKind) -> Option<&Association> {
+        self.associations
+            .iter()
+            .find(|a| a.target_id == target_id && a.kind == kind)
+    }
+
+    pub fn get_associations_by_kind(&self, kind: LinkKind) -> Vec<&Association> {
+        self.associations
+            .iter()
+            .filter(|a| a.kind == kind)
+            .collect()
+    }
+
+    pub fn association_strength(&self, target_id: Id) -> f64 {
+        self.associations
+            .iter()
+            .filter(|a| a.target_id == target_id)
+            .map(|a| a.strength)
+            .sum()
+    }
+
+    pub fn decay_associations(&mut self, current_time: Timestamp) {
+        for association in &mut self.associations {
+            association.decay(current_time, self.metadata.decay_rate);
+        }
+        self.associations.retain(|a| a.strength > 0.01);
+    }
+
+    pub fn spreading_activation_potential(&self) -> f64 {
+        let base_activation = self
+            .metadata
+            .base_level_activation(self.metadata.last_accessed_at);
+        let emotional_boost = self.metadata.emotional_modulation();
+        
+        (base_activation + emotional_boost) / 2.0
+    }
+
+    pub fn reconsolidate(&mut self, new_embedding: &[f64], learning_rate: f64) {
+        let alpha = learning_rate * self.metadata.lability;
+        
+        if self.embedding.len() == new_embedding.len() {
+            for (emb, new) in self.embedding.iter_mut().zip(new_embedding.iter()) {
+                *emb = (1.0 - alpha) * *emb + alpha * new;
+            }
+            
+            let norm: f64 = self.embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
+            if norm > 0.0 {
+                for x in &mut self.embedding {
+                    *x /= norm;
+                }
+            }
+        }
+        
+        self.metadata.apply_reconsolidation();
+    }
+}
+
+pub struct MemoryBuilder {
+    id: Option<Id>,
+    content: MemoryContent,
+    embedding: Embedding,
+    metadata: MemoryMetadata,
+    associations: Vec<Association>,
+}
+
+impl MemoryBuilder {
+    pub fn new(embedding: Embedding, created_at: Timestamp) -> Self {
+        Self {
+            id: None,
+            content: MemoryContent::text(String::new()),
+            embedding,
+            metadata: MemoryMetadata::new(created_at),
+            associations: Vec::new(),
+        }
+    }
+
+    pub fn id(mut self, id: Id) -> Self {
+        self.id = Some(id);
+        self
+    }
+
+    pub fn text(mut self, text: impl Into<String>) -> Self {
+        self.content = MemoryContent::text(text);
+        self
+    }
+
+    pub fn structured(mut self, data: serde_json::Value) -> Self {
+        self.content = MemoryContent::structured(data);
+        self
+    }
+
+    pub fn raw(mut self, data: Vec<u8>) -> Self {
+        self.content = MemoryContent::raw(data);
+        self
+    }
+
+    pub fn emotion(mut self, valence: f64, arousal: f64) -> Self {
+        self.metadata = self.metadata.with_emotion(valence, arousal);
+        self
+    }
+
+    pub fn decay_rate(mut self, rate: f64) -> Self {
+        self.metadata = self.metadata.with_decay_rate(rate);
+        self
+    }
+
+    pub fn importance(mut self, importance: f64) -> Self {
+        self.metadata = self.metadata.with_importance(importance);
+        self
+    }
+
+    pub fn context(mut self, context: impl Into<String>) -> Self {
+        self.metadata = self.metadata.with_context(context);
+        self
+    }
+
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.metadata.add_tag(tag);
+        self
+    }
+
+    pub fn association(mut self, association: Association) -> Self {
+        self.associations.push(association);
+        self
+    }
+
+    pub fn link(mut self, target_id: Id, strength: f64, kind: LinkKind, at: Timestamp) -> Self {
+        self.associations
+            .push(Association::new(target_id, strength, kind, at));
+        self
+    }
+
+    pub fn build(self) -> Memory {
+        Memory {
+            id: Id::new(),
+            content: self.content,
+            embedding: self.embedding,
+            metadata: self.metadata,
+            associations: self.associations,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::now;
+
+    fn make_embedding(values: &[f64]) -> Embedding {
+        let norm: f64 = values.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm > 0.0 {
+            values.iter().map(|x| x / norm).collect()
+        } else {
+            values.to_vec()
+        }
+    }
+
+    #[test]
+    fn test_memory_creation() {
+        let embedding = make_embedding(&[1.0, 2.0, 3.0]);
+        let now = now();
+
+        let memory = Memory::text("test memory", embedding.clone(), now);
+
+        assert!(memory.content.text.is_some());
+        assert_eq!(memory.metadata.created_at, now);
+        assert_eq!(memory.metadata.access_count, 0);
+    }
+
+    #[test]
+    fn test_memory_access() {
+        let embedding = make_embedding(&[1.0, 0.0, 0.0]);
+        let now = now();
+
+        let mut memory = Memory::text("test", embedding, now);
+        memory.accessed(now + 1000);
+
+        assert_eq!(memory.metadata.access_count, 1);
+        assert_eq!(memory.metadata.last_accessed_at, now + 1000);
+    }
+
+    #[test]
+    fn test_association() {
+        let id2 = Id::new();
+        let now = now();
+
+        let embedding = make_embedding(&[1.0, 0.0, 0.0]);
+        let mut memory = Memory::text("test", embedding, now);
+
+        let association = Association::semantic(id2, 0.8, now);
+        memory.add_association(association);
+
+        assert_eq!(memory.associations.len(), 1);
+        assert_eq!(memory.association_strength(id2), 0.8);
+    }
+
+    #[test]
+    fn test_metadata_decay() {
+        let now = now();
+        let mut metadata = MemoryMetadata::new(now)
+            .with_decay_rate(0.5)
+            .with_importance(0.8);
+        
+        metadata.accessed(now);
+
+        let activation = metadata.base_level_activation(now + 2000);
+        assert!(activation > 0.0);
+    }
+
+    #[test]
+    fn test_memory_builder() {
+        let embedding = make_embedding(&[1.0, 0.0, 0.0]);
+        let now = now();
+        let target_id = Id::new();
+
+        let memory = MemoryBuilder::new(embedding.clone(), now)
+            .text("test memory")
+            .emotion(0.7, 0.8)
+            .importance(0.9)
+            .context("test context")
+            .tag("important")
+            .link(target_id, 0.5, LinkKind::Semantic, now)
+            .build();
+
+        assert!(memory.content.text.is_some());
+        assert_eq!(memory.metadata.emotional_weight.valence, 0.7);
+        assert_eq!(memory.metadata.importance, 0.9);
+        assert_eq!(memory.metadata.context, Some("test context".to_string()));
+        assert!(memory.metadata.tags.contains(&"important".to_string()));
+        assert_eq!(memory.associations.len(), 1);
+    }
+
+    #[test]
+    fn test_association_decay() {
+        let target_id = Id::new();
+        let now = now();
+        
+        let mut association = Association::semantic(target_id, 0.9, now);
+        association.decay(now + 1000, 0.5);
+
+        assert!(association.strength < 0.9);
+        assert!(association.strength > 0.0);
+    }
+
+    #[test]
+    fn test_temporal_context_creation() {
+        let ctx = TemporalContext::new(3);
+        assert_eq!(ctx.context_vector.len(), 3);
+        assert_eq!(ctx.drift_rate, 0.7);
+        assert_eq!(ctx.integration_rate, 0.3);
+    }
+
+    #[test]
+    fn test_temporal_context_update() {
+        let mut ctx = TemporalContext::new(3);
+        
+        ctx.update(&[1.0, 0.0, 0.0]);
+        
+        let norm: f64 = ctx.context_vector.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!((norm - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_temporal_context_similarity() {
+        let mut ctx1 = TemporalContext::new(3);
+        let mut ctx2 = TemporalContext::new(3);
+        
+        ctx1.update(&[1.0, 0.0, 0.0]);
+        ctx2.update(&[1.0, 0.0, 0.0]);
+        
+        let similarity = ctx1.similarity(&ctx2);
+        assert!(similarity > 0.9);
+    }
+
+    #[test]
+    fn test_temporal_context_drift() {
+        let mut ctx = TemporalContext::new(3);
+        
+        ctx.update(&[1.0, 0.0, 0.0]);
+        let state1 = ctx.context_vector.clone();
+        
+        ctx.update(&[0.0, 1.0, 0.0]);
+        let state2 = ctx.context_vector.clone();
+        
+        let changed = state1.iter().zip(state2.iter()).any(|(a, b)| (a - b).abs() > 0.01);
+        assert!(changed);
+    }
+
+    #[test]
+    fn test_temporal_context_similarity_to_embedding() {
+        let mut ctx = TemporalContext::new(3);
+        ctx.update(&[1.0, 0.0, 0.0]);
+        
+        let similarity = ctx.similarity_to_embedding(&[1.0, 0.0, 0.0]);
+        assert!(similarity > 0.9);
+        
+        let low_similarity = ctx.similarity_to_embedding(&[0.0, 1.0, 0.0]);
+        assert!(low_similarity < similarity);
+    }
+
+    #[test]
+    fn test_reconsolidation_trigger() {
+        let metadata = MemoryMetadata::new(now());
+        
+        assert!(!metadata.should_reconsolidate(0.1));
+        assert!(metadata.should_reconsolidate(0.8));
+    }
+
+    #[test]
+    fn test_reconsolidation_lability_decay() {
+        let mut metadata = MemoryMetadata::new(now());
+        let initial_lability = metadata.lability;
+        
+        metadata.apply_reconsolidation();
+        
+        assert!(metadata.lability < initial_lability);
+    }
+
+    #[test]
+    fn test_memory_reconsolidate() {
+        let embedding = make_embedding(&[1.0, 0.0, 0.0]);
+        let now = now();
+        let mut memory = Memory::text("test", embedding.clone(), now);
+        
+        let initial_embedding = memory.embedding.clone();
+        memory.reconsolidate(&[0.9, 0.1, 0.0], 0.5);
+        
+        let changed = initial_embedding.iter()
+            .zip(memory.embedding.iter())
+            .any(|(a, b)| (a - b).abs() > 0.01);
+        assert!(changed);
+        
+        let norm: f64 = memory.embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!((norm - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_reconsolidation_stability() {
+        let embedding = make_embedding(&[1.0, 0.0, 0.0]);
+        let now = now();
+        let mut memory = Memory::text("test", embedding.clone(), now);
+        
+        for _ in 0..10 {
+            memory.reconsolidate(&[1.0, 0.0, 0.0], 0.1);
+        }
+        
+        let norm: f64 = memory.embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!((norm - 1.0).abs() < 0.01);
+        assert!(memory.embedding.iter().all(|&x| x.is_finite()));
+    }
+
+    #[test]
+    fn test_reconsolidation_with_small_learning_rate() {
+        let embedding = make_embedding(&[1.0, 0.0, 0.0]);
+        let now = now();
+        let mut memory = Memory::text("test", embedding.clone(), now);
+        
+        let initial_embedding = memory.embedding.clone();
+        memory.reconsolidate(&[0.0, 1.0, 0.0], 0.01);
+        
+        let change: f64 = initial_embedding.iter()
+            .zip(memory.embedding.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(change < 0.1);
+    }
+}

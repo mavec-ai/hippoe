@@ -17,6 +17,9 @@ bincode = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
 redis = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+fastembed = { workspace = true, optional = true }
+parking_lot = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx = { workspace = true }
@@ -25,9 +28,12 @@ rand = { workspace = true }
 
 [features]
 default = []
-sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:bincode"]
+sqlite = ["dep:sqlx", "sqlx/sqlite", "sqlx/macros", "dep:bincode"]
 redis = ["dep:redis", "dep:bincode", "dep:futures"]
-postgres = ["dep:sqlx", "sqlx/postgres", "dep:bincode"]
+postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/macros", "dep:bincode"]
+embedding-fastembed = ["dep:fastembed", "dep:parking_lot"]
+embedding-ollama = ["dep:reqwest"]
+embedding-openai = ["dep:reqwest"]
 
 [[bench]]
 name = "hippocampus"
@@ -35,4 +41,8 @@ harness = false
 
 [[bench]]
 name = "storage"
+harness = false
+
+[[bench]]
+name = "quality"
 harness = false

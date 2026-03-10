@@ -1,7 +1,8 @@
 #![allow(clippy::expect_used)]
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use hippoe_core::{Id, InMemoryStorage, Storage, Trace};
+use hippoe_core::{Id, InMemoryStorage, Memory, MemoryBuilder, Storage};
+use hippoe_core::types::{LinkKind, now};
 use rand::Rng;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -10,12 +11,15 @@ use tokio::sync::Mutex;
 #[cfg(feature = "sqlite")]
 use hippoe_core::SqliteStorage;
 
-fn generate_traces(count: usize, dimensions: usize) -> Vec<Trace> {
+fn generate_memories(count: usize, dimensions: usize) -> Vec<Memory> {
     let mut rng = rand::thread_rng();
+    let ts = now();
     (0..count)
         .map(|_| {
             let embedding: Vec<f64> = (0..dimensions).map(|_| rng.gen_range(0.0..1.0)).collect();
-            Trace::new(Id::new(), embedding)
+            MemoryBuilder::new(embedding, ts)
+                .text(format!("memory_{}", Id::new()))
+                .build()
         })
         .collect()
 }
@@ -25,15 +29,15 @@ fn bench_storage_put(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     for &count in &[100, 500, 1000, 2000] {
-        let traces = generate_traces(count, 1536);
+        let memories = generate_memories(count, 1536);
 
         group.throughput(Throughput::Elements(count as u64));
-        group.bench_with_input(BenchmarkId::new("traces", count), &count, |bench, _| {
+        group.bench_with_input(BenchmarkId::new("memories", count), &count, |bench, _| {
             bench.iter(|| {
                 let storage = InMemoryStorage::new();
                 rt.block_on(async {
-                    for trace in traces.clone() {
-                        storage.put(trace).await.unwrap();
+                    for memory in memories.clone() {
+                        storage.put(memory).await.unwrap();
                     }
                 });
                 black_box(storage)
@@ -49,18 +53,18 @@ fn bench_storage_get(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     for &count in &[100, 500, 1000, 2000] {
-        let traces = generate_traces(count, 1536);
-        let ids: Vec<Id> = traces.iter().map(|t| t.id).collect();
+        let memories = generate_memories(count, 1536);
+        let ids: Vec<Id> = memories.iter().map(|m| m.id).collect();
 
         let storage = InMemoryStorage::new();
         rt.block_on(async {
-            for trace in traces {
-                storage.put(trace).await.unwrap();
+            for memory in memories {
+                storage.put(memory).await.unwrap();
             }
         });
 
         group.throughput(Throughput::Elements(count as u64));
-        group.bench_with_input(BenchmarkId::new("traces", count), &count, |bench, _| {
+        group.bench_with_input(BenchmarkId::new("memories", count), &count, |bench, _| {
             bench.iter(|| {
                 rt.block_on(async {
                     for id in &ids {
@@ -79,17 +83,17 @@ fn bench_storage_all(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     for &count in &[100, 500, 1000, 2000] {
-        let traces = generate_traces(count, 1536);
+        let memories = generate_memories(count, 1536);
 
         let storage = InMemoryStorage::new();
         rt.block_on(async {
-            for trace in traces {
-                storage.put(trace).await.unwrap();
+            for memory in memories {
+                storage.put(memory).await.unwrap();
             }
         });
 
         group.throughput(Throughput::Elements(count as u64));
-        group.bench_with_input(BenchmarkId::new("traces", count), &count, |bench, _| {
+        group.bench_with_input(BenchmarkId::new("memories", count), &count, |bench, _| {
             bench.iter(|| {
                 rt.block_on(async {
                     black_box(storage.all().await.unwrap());
@@ -107,15 +111,15 @@ fn bench_storage_remove(c: &mut Criterion) {
 
     for &count in &[100, 500, 1000, 2000] {
         group.throughput(Throughput::Elements(count as u64));
-        group.bench_with_input(BenchmarkId::new("traces", count), &count, |bench, _| {
+        group.bench_with_input(BenchmarkId::new("memories", count), &count, |bench, _| {
             bench.iter(|| {
-                let traces = generate_traces(count, 1536);
-                let ids: Vec<Id> = traces.iter().map(|t| t.id).collect();
+                let memories = generate_memories(count, 1536);
+                let ids: Vec<Id> = memories.iter().map(|m| m.id).collect();
 
                 let storage = InMemoryStorage::new();
                 rt.block_on(async {
-                    for trace in traces {
-                        storage.put(trace).await.unwrap();
+                    for memory in memories {
+                        storage.put(memory).await.unwrap();
                     }
                 });
 
@@ -132,25 +136,29 @@ fn bench_storage_remove(c: &mut Criterion) {
     group.finish();
 }
 
-fn generate_traces_with_links(
+fn generate_memories_with_links(
     count: usize,
     dimensions: usize,
-    links_per_trace: usize,
-) -> Vec<Trace> {
+    links_per_memory: usize,
+) -> Vec<Memory> {
     let mut rng = rand::thread_rng();
     let ids: Vec<Id> = (0..count).map(|_| Id::new()).collect();
+    let ts = now();
 
     ids.iter()
         .map(|&id| {
             let embedding: Vec<f64> = (0..dimensions).map(|_| rng.gen_range(0.0..1.0)).collect();
 
-            let mut trace = Trace::new(id, embedding);
-            for &link_id in ids.iter().take(std::cmp::min(links_per_trace, count)) {
+            let mut builder = MemoryBuilder::new(embedding, ts)
+                .id(id)
+                .text(format!("memory_{}", id));
+
+            for &link_id in ids.iter().take(std::cmp::min(links_per_memory, count)) {
                 if id != link_id {
-                    trace = trace.link(link_id, 0.5);
+                    builder = builder.link(link_id, 0.5, LinkKind::Semantic, ts);
                 }
             }
-            trace
+            builder.build()
         })
         .collect()
 }
@@ -160,21 +168,22 @@ fn bench_storage_links(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     for &count in &[100, 500, 1000] {
-        let traces = generate_traces_with_links(count, 1536, 5);
+        let memories = generate_memories_with_links(count, 1536, 5);
 
         let storage = InMemoryStorage::new();
         rt.block_on(async {
-            for trace in traces {
-                storage.put(trace).await.unwrap();
+            for memory in memories {
+                storage.put(memory).await.unwrap();
             }
         });
 
         let link_count = count * std::cmp::min(5, count);
         group.throughput(Throughput::Elements(link_count as u64));
-        group.bench_with_input(BenchmarkId::new("traces", count), &count, |bench, _| {
+        group.bench_with_input(BenchmarkId::new("memories", count), &count, |bench, _| {
             bench.iter(|| {
                 rt.block_on(async {
-                    black_box(storage.links().await.unwrap());
+                    let graph = storage.get_graph().await.unwrap();
+                    black_box(graph.edge_count());
                 });
             });
         });
@@ -188,16 +197,16 @@ fn bench_storage_mixed_operations(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     for &count in &[100, 500, 1000] {
-        let traces = generate_traces(count * 2, 1536);
-        let ids: Vec<Id> = traces.iter().map(|t| t.id).collect();
+        let memories = generate_memories(count * 2, 1536);
+        let ids: Vec<Id> = memories.iter().map(|m| m.id).collect();
 
         group.throughput(Throughput::Elements(count as u64));
         group.bench_with_input(BenchmarkId::new("operations", count), &count, |bench, _| {
             bench.iter(|| {
                 let storage = InMemoryStorage::new();
                 rt.block_on(async {
-                    for trace in traces.iter().take(count) {
-                        storage.put(trace.clone()).await.unwrap();
+                    for memory in memories.iter().take(count) {
+                        storage.put(memory.clone()).await.unwrap();
                     }
 
                     for id in ids.iter().take(count / 2) {
@@ -223,14 +232,14 @@ fn bench_storage_concurrent_reads(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     for &count in &[100, 500, 1000] {
-        let traces = generate_traces(count, 1536);
-        let ids: Vec<Id> = traces.iter().map(|t| t.id).collect();
+        let memories = generate_memories(count, 1536);
+        let ids: Vec<Id> = memories.iter().map(|m| m.id).collect();
 
         let storage = Arc::new(Mutex::new(InMemoryStorage::new()));
         rt.block_on(async {
             let s = storage.lock().await;
-            for trace in traces {
-                s.put(trace).await.unwrap();
+            for memory in memories {
+                s.put(memory).await.unwrap();
             }
         });
 
@@ -260,17 +269,17 @@ fn bench_storage_concurrent_writes(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     for &count in &[100, 500, 1000] {
-        let traces = generate_traces(count, 1536);
+        let memories = generate_memories(count, 1536);
 
         group.throughput(Throughput::Elements(count as u64));
         group.bench_with_input(BenchmarkId::new("concurrent", count), &count, |bench, _| {
             bench.iter(|| {
                 let storage = Arc::new(Mutex::new(InMemoryStorage::new()));
-                let traces = traces.clone();
+                let memories = memories.clone();
                 rt.block_on(async {
                     let s = storage.lock().await;
-                    for trace in traces {
-                        s.put(trace).await.unwrap();
+                    for memory in memories {
+                        s.put(memory).await.unwrap();
                     }
                 });
             });
@@ -286,15 +295,15 @@ fn bench_storage_large_dataset(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     for &count in &[5000, 10000] {
-        let traces = generate_traces(count, 1536);
+        let memories = generate_memories(count, 1536);
 
         group.throughput(Throughput::Elements(count as u64));
         group.bench_with_input(BenchmarkId::new("insert", count), &count, |bench, _| {
             bench.iter(|| {
                 let storage = InMemoryStorage::new();
                 rt.block_on(async {
-                    for trace in traces.clone() {
-                        storage.put(trace).await.unwrap();
+                    for memory in memories.clone() {
+                        storage.put(memory).await.unwrap();
                     }
                 });
                 black_box(storage)
@@ -311,13 +320,13 @@ fn bench_storage_large_dataset_read(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     for &count in &[5000, 10000] {
-        let traces = generate_traces(count, 1536);
-        let ids: Vec<Id> = traces.iter().map(|t| t.id).collect();
+        let memories = generate_memories(count, 1536);
+        let ids: Vec<Id> = memories.iter().map(|m| m.id).collect();
 
         let storage = InMemoryStorage::new();
         rt.block_on(async {
-            for trace in traces {
-                storage.put(trace).await.unwrap();
+            for memory in memories {
+                storage.put(memory).await.unwrap();
             }
         });
 
@@ -342,15 +351,15 @@ fn bench_sqlite_storage_put(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     for &count in &[100, 500, 1000] {
-        let traces = generate_traces(count, 1536);
+        let memories = generate_memories(count, 1536);
 
         group.throughput(Throughput::Elements(count as u64));
-        group.bench_with_input(BenchmarkId::new("traces", count), &count, |bench, _| {
+        group.bench_with_input(BenchmarkId::new("memories", count), &count, |bench, _| {
             bench.iter(|| {
                 let storage = rt.block_on(async {
                     let s = SqliteStorage::new_in_memory().await.unwrap();
-                    for trace in traces.clone() {
-                        s.put(trace).await.unwrap();
+                    for memory in memories.clone() {
+                        s.put(memory).await.unwrap();
                     }
                     s
                 });
@@ -368,19 +377,19 @@ fn bench_sqlite_storage_get(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     for &count in &[100, 500, 1000] {
-        let traces = generate_traces(count, 1536);
-        let ids: Vec<Id> = traces.iter().map(|t| t.id).collect();
+        let memories = generate_memories(count, 1536);
+        let ids: Vec<Id> = memories.iter().map(|m| m.id).collect();
 
         let storage = rt.block_on(async {
             let s = SqliteStorage::new_in_memory().await.unwrap();
-            for trace in traces {
-                s.put(trace).await.unwrap();
+            for memory in memories {
+                s.put(memory).await.unwrap();
             }
             s
         });
 
         group.throughput(Throughput::Elements(count as u64));
-        group.bench_with_input(BenchmarkId::new("traces", count), &count, |bench, _| {
+        group.bench_with_input(BenchmarkId::new("memories", count), &count, |bench, _| {
             bench.iter(|| {
                 rt.block_on(async {
                     for id in &ids {
@@ -400,18 +409,18 @@ fn bench_sqlite_storage_all(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     for &count in &[100, 500, 1000] {
-        let traces = generate_traces(count, 1536);
+        let memories = generate_memories(count, 1536);
 
         let storage = rt.block_on(async {
             let s = SqliteStorage::new_in_memory().await.unwrap();
-            for trace in traces {
-                s.put(trace).await.unwrap();
+            for memory in memories {
+                s.put(memory).await.unwrap();
             }
             s
         });
 
         group.throughput(Throughput::Elements(count as u64));
-        group.bench_with_input(BenchmarkId::new("traces", count), &count, |bench, _| {
+        group.bench_with_input(BenchmarkId::new("memories", count), &count, |bench, _| {
             bench.iter(|| {
                 rt.block_on(async {
                     black_box(storage.all().await.unwrap());
@@ -429,8 +438,8 @@ fn bench_sqlite_vs_inmemory(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     let count = 500;
-    let traces = generate_traces(count, 1536);
-    let ids: Vec<Id> = traces.iter().map(|t| t.id).collect();
+    let memories = generate_memories(count, 1536);
+    let ids: Vec<Id> = memories.iter().map(|m| m.id).collect();
 
     group.throughput(Throughput::Elements(count as u64));
 
@@ -438,8 +447,8 @@ fn bench_sqlite_vs_inmemory(c: &mut Criterion) {
         bench.iter(|| {
             let storage = InMemoryStorage::new();
             rt.block_on(async {
-                for trace in traces.clone() {
-                    storage.put(trace).await.unwrap();
+                for memory in memories.clone() {
+                    storage.put(memory).await.unwrap();
                 }
             });
             black_box(storage)
@@ -450,8 +459,8 @@ fn bench_sqlite_vs_inmemory(c: &mut Criterion) {
         bench.iter(|| {
             let storage = rt.block_on(async {
                 let s = SqliteStorage::new_in_memory().await.unwrap();
-                for trace in traces.clone() {
-                    s.put(trace).await.unwrap();
+                for memory in memories.clone() {
+                    s.put(memory).await.unwrap();
                 }
                 s
             });
@@ -461,15 +470,15 @@ fn bench_sqlite_vs_inmemory(c: &mut Criterion) {
 
     let inmem_storage = InMemoryStorage::new();
     rt.block_on(async {
-        for trace in traces.clone() {
-            inmem_storage.put(trace).await.unwrap();
+        for memory in memories.clone() {
+            inmem_storage.put(memory).await.unwrap();
         }
     });
 
     let sqlite_storage = rt.block_on(async {
         let s = SqliteStorage::new_in_memory().await.unwrap();
-        for trace in traces.clone() {
-            s.put(trace).await.unwrap();
+        for memory in memories.clone() {
+            s.put(memory).await.unwrap();
         }
         s
     });

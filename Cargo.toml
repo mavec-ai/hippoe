@@ -3,7 +3,7 @@ resolver = "3"
 members = ["core"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 authors = ["Deni Andreawan Kusuma"]
 license = "Apache-2.0"
@@ -21,9 +21,12 @@ rand = "0.8"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "test-util", "macros"] }
 async-trait = "0.1"
 bincode = "1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "macros"] }
 redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"] }
 futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+fastembed = { version = "5" }
+parking_lot = "0.12"
 
 [profile.release]
 lto = "thin"

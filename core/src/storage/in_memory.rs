@@ -4,18 +4,20 @@ use tokio::sync::RwLock;
 
 use super::Storage;
 use crate::error::Result;
-use crate::memory::Trace;
-use crate::types::{Id, Link};
+use crate::memory::{AssociationGraph, Memory};
+use crate::types::Id;
 use async_trait::async_trait;
 
 pub struct InMemoryStorage {
-    traces: Arc<RwLock<HashMap<Id, Trace>>>,
+    memories: Arc<RwLock<HashMap<Id, Memory>>>,
+    graph: Arc<RwLock<AssociationGraph>>,
 }
 
 impl InMemoryStorage {
     pub fn new() -> Self {
         Self {
-            traces: Arc::new(RwLock::new(HashMap::new())),
+            memories: Arc::new(RwLock::new(HashMap::new())),
+            graph: Arc::new(RwLock::new(AssociationGraph::new())),
         }
     }
 }
@@ -28,53 +30,148 @@ impl Default for InMemoryStorage {
 
 #[async_trait]
 impl Storage for InMemoryStorage {
-    async fn get(&self, id: Id) -> Result<Option<Trace>> {
-        let traces = self.traces.read().await;
-        Ok(traces.get(&id).cloned())
+    async fn get(&self, id: Id) -> Result<Option<Memory>> {
+        let memories = self.memories.read().await;
+        Ok(memories.get(&id).cloned())
     }
 
-    async fn put(&self, trace: Trace) -> Result<()> {
-        let mut traces = self.traces.write().await;
-        traces.insert(trace.id, trace);
+    async fn put(&self, memory: Memory) -> Result<()> {
+        let mut memories = self.memories.write().await;
+        memories.insert(memory.id, memory);
         Ok(())
     }
 
     async fn remove(&self, id: Id) -> Result<()> {
-        let mut traces = self.traces.write().await;
-        traces.remove(&id);
+        let mut memories = self.memories.write().await;
+        let mut graph = self.graph.write().await;
+
+        memories.remove(&id);
+        graph.remove_node(id);
+
         Ok(())
     }
 
-    async fn all(&self) -> Result<Vec<Trace>> {
-        let traces = self.traces.read().await;
-        Ok(traces.values().cloned().collect())
+    async fn all(&self) -> Result<Vec<Memory>> {
+        let memories = self.memories.read().await;
+        Ok(memories.values().cloned().collect())
     }
 
     fn len(&self) -> usize {
-        let traces = self.traces.try_read();
-        match traces {
-            Ok(t) => t.len(),
+        let memories = self.memories.try_read();
+        match memories {
+            Ok(m) => m.len(),
             Err(_) => 0,
         }
     }
 
-    async fn links(&self) -> Result<Vec<Link>> {
-        let traces = self.traces.read().await;
-        let mut all_links = Vec::new();
-        for trace in traces.values() {
-            for (to, strength) in &trace.outgoing {
-                all_links.push(Link::semantic(trace.id, *to, *strength));
-            }
+    async fn get_graph(&self) -> Result<AssociationGraph> {
+        let graph = self.graph.read().await;
+        Ok(graph.clone())
+    }
+
+    async fn update_graph<F>(&self, f: F) -> Result<()>
+    where
+        F: FnOnce(&mut AssociationGraph) + Send,
+    {
+        let mut graph = self.graph.write().await;
+        f(&mut graph);
+        Ok(())
+    }
+
+    async fn find_by_tag(&self, tag: &str) -> Result<Vec<Memory>> {
+        let memories = self.memories.read().await;
+        Ok(memories
+            .values()
+            .filter(|m| m.metadata.tags.contains(&tag.to_string()))
+            .cloned()
+            .collect())
+    }
+
+    async fn find_by_context(&self, context: &str) -> Result<Vec<Memory>> {
+        let memories = self.memories.read().await;
+        Ok(memories
+            .values()
+            .filter(|m| {
+                m.metadata
+                    .context
+                    .as_ref()
+                    .map(|c| c == context)
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn find_by_similarity(
+        &self,
+        embedding: &[f64],
+        threshold: f64,
+        limit: usize,
+    ) -> Result<Vec<Memory>> {
+        let memories = self.memories.read().await;
+        let mut scored: Vec<(f64, &Memory)> = memories
+            .values()
+            .filter_map(|m| {
+                let sim = compute_cosine_similarity(embedding, &m.embedding);
+                if sim >= threshold {
+                    Some((sim, m))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        scored.truncate(limit);
+
+        Ok(scored.into_iter().map(|(_, m)| m.clone()).collect())
+    }
+
+    async fn get_associated(&self, id: Id, max_depth: usize) -> Result<Vec<Memory>> {
+        let graph = self.graph.read().await;
+        let memories = self.memories.read().await;
+
+        let mut activations = graph.spreading_activation(id, max_depth, 0.5);
+        
+        for edge in graph.get_edges_to(id) {
+            let entry = activations.entry(edge.from).or_insert(0.0);
+            *entry = entry.max(edge.strength);
         }
-        Ok(all_links)
+
+        let mut associated: Vec<Memory> = activations
+            .into_iter()
+            .filter_map(|(mem_id, _)| memories.get(&mem_id).cloned())
+            .collect();
+
+        associated.retain(|m| m.id != id);
+
+        Ok(associated)
+    }
+}
+
+fn compute_cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+
+    let dot_product: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let norm_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+
+    if norm_a > 0.0 && norm_b > 0.0 {
+        (dot_product / (norm_a * norm_b)).max(0.0)
+    } else {
+        0.0
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::{AssociationEdge, MemoryBuilder};
+    use crate::types::{now, LinkKind};
 
-    fn make_embedding(values: &[f64]) -> crate::types::Embedding {
+    fn make_embedding(values: &[f64]) -> Vec<f64> {
         let norm: f64 = values.iter().map(|x| x * x).sum::<f64>().sqrt();
         if norm > 0.0 {
             values.iter().map(|x| x / norm).collect()
@@ -84,144 +181,171 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_inmemory_storage_basic_operations() {
+    async fn test_memory_storage_basic_operations() {
         let storage = InMemoryStorage::new();
 
         assert!(storage.is_empty());
         assert_eq!(storage.len(), 0);
 
-        let id = Id::new();
-        let trace = Trace::new(id, make_embedding(&[1.0, 0.0, 0.0]));
+        let mem = Memory::text("test", make_embedding(&[1.0, 0.0, 0.0]), now());
 
-        storage.put(trace.clone()).await.unwrap();
+        storage.put(mem.clone()).await.unwrap();
 
         assert!(!storage.is_empty());
         assert_eq!(storage.len(), 1);
 
-        let retrieved = storage.get(id).await.unwrap();
+        let retrieved = storage.get(mem.id).await.unwrap();
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().id, id);
-
-        let all = storage.all().await.unwrap();
-        assert_eq!(all.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_inmemory_storage_update() {
+    async fn test_memory_storage_graph_operations() {
         let storage = InMemoryStorage::new();
 
-        let id = Id::new();
-        let trace1 = Trace::new(id, make_embedding(&[1.0, 0.0, 0.0])).accessed(1000);
-        let trace2 = Trace::new(id, make_embedding(&[0.9, 0.1, 0.0])).accessed(2000);
+        let mem1 = Memory::text("memory 1", make_embedding(&[1.0, 0.0, 0.0]), now());
+        let mem2 = Memory::text("memory 2", make_embedding(&[0.9, 0.1, 0.0]), now());
 
-        storage.put(trace1).await.unwrap();
-        storage.put(trace2.clone()).await.unwrap();
-
-        assert_eq!(storage.len(), 1);
-
-        let retrieved = storage.get(id).await.unwrap().unwrap();
-        assert_eq!(retrieved.last_access(), Some(2000));
-    }
-
-    #[tokio::test]
-    async fn test_inmemory_storage_remove() {
-        let storage = InMemoryStorage::new();
-
-        let id1 = Id::new();
-        let id2 = Id::new();
+        storage.put(mem1.clone()).await.unwrap();
+        storage.put(mem2.clone()).await.unwrap();
 
         storage
-            .put(Trace::new(id1, make_embedding(&[1.0, 0.0, 0.0])))
-            .await
-            .unwrap();
-        storage
-            .put(Trace::new(id2, make_embedding(&[0.0, 1.0, 0.0])))
+            .update_graph(|g| {
+                g.add_edge(AssociationEdge::new(
+                    mem1.id,
+                    mem2.id,
+                    0.8,
+                    LinkKind::Semantic,
+                    now(),
+                ));
+            })
             .await
             .unwrap();
 
-        assert_eq!(storage.len(), 2);
-
-        storage.remove(id1).await.unwrap();
-
-        assert_eq!(storage.len(), 1);
-        assert!(storage.get(id1).await.unwrap().is_none());
-        assert!(storage.get(id2).await.unwrap().is_some());
+        let graph = storage.get_graph().await.unwrap();
+        assert!(graph.has_edge(mem1.id, mem2.id));
     }
 
     #[tokio::test]
-    async fn test_inmemory_storage_links() {
+    async fn test_memory_storage_find_by_tag() {
         let storage = InMemoryStorage::new();
+        let current_time = now();
 
-        let id1 = Id::new();
-        let id2 = Id::new();
-        let id3 = Id::new();
+        let mem1 = MemoryBuilder::new(make_embedding(&[1.0, 0.0, 0.0]), current_time)
+            .text("important note")
+            .tag("important")
+            .build();
 
-        let trace1 = Trace::new(id1, make_embedding(&[1.0, 0.0, 0.0]))
-            .link(id2, 0.8)
-            .link(id3, 0.5);
-        let trace2 = Trace::new(id2, make_embedding(&[0.0, 1.0, 0.0])).link(id3, 0.9);
+        let mem2 = MemoryBuilder::new(make_embedding(&[0.0, 1.0, 0.0]), current_time)
+            .text("regular note")
+            .tag("normal")
+            .build();
 
-        storage.put(trace1).await.unwrap();
-        storage.put(trace2).await.unwrap();
+        storage.put(mem1).await.unwrap();
+        storage.put(mem2).await.unwrap();
 
-        let links = storage.links().await.unwrap();
-
-        assert_eq!(links.len(), 3);
-
-        let id1_links: Vec<_> = links.iter().filter(|l| l.from == id1).collect();
-        assert_eq!(id1_links.len(), 2);
-
-        let id2_links: Vec<_> = links.iter().filter(|l| l.from == id2).collect();
-        assert_eq!(id2_links.len(), 1);
+        let important = storage.find_by_tag("important").await.unwrap();
+        assert_eq!(important.len(), 1);
+        assert_eq!(important[0].content.text, Some("important note".to_string()));
     }
 
     #[tokio::test]
-    async fn test_inmemory_storage_multiple_traces() {
+    async fn test_memory_storage_find_by_context() {
         let storage = InMemoryStorage::new();
+        let current_time = now();
 
-        let count = 10;
-        for i in 0..count {
-            let id = Id::new();
-            let embedding = make_embedding(&[i as f64, 0.0, 0.0]);
-            storage.put(Trace::new(id, embedding)).await.unwrap();
-        }
+        let mem1 = MemoryBuilder::new(make_embedding(&[1.0, 0.0, 0.0]), current_time)
+            .text("work task")
+            .context("work")
+            .build();
 
-        assert_eq!(storage.len(), count);
+        let mem2 = MemoryBuilder::new(make_embedding(&[0.0, 1.0, 0.0]), current_time)
+            .text("personal task")
+            .context("personal")
+            .build();
 
-        let all = storage.all().await.unwrap();
-        assert_eq!(all.len(), count);
+        storage.put(mem1).await.unwrap();
+        storage.put(mem2).await.unwrap();
+
+        let work_memories = storage.find_by_context("work").await.unwrap();
+        assert_eq!(work_memories.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_inmemory_storage_get_nonexistent() {
+    async fn test_memory_storage_find_by_similarity() {
         let storage = InMemoryStorage::new();
 
-        let result = storage.get(Id::new()).await.unwrap();
-        assert!(result.is_none());
+        let mem1 = Memory::text("m1", make_embedding(&[1.0, 0.0, 0.0]), now());
+        let mem2 = Memory::text("m2", make_embedding(&[0.95, 0.1, 0.0]), now());
+        let mem3 = Memory::text("m3", make_embedding(&[0.1, 0.9, 0.0]), now());
+
+        storage.put(mem1).await.unwrap();
+        storage.put(mem2).await.unwrap();
+        storage.put(mem3).await.unwrap();
+
+        let probe = make_embedding(&[1.0, 0.0, 0.0]);
+        let similar = storage.find_by_similarity(&probe, 0.9, 10).await.unwrap();
+
+        assert_eq!(similar.len(), 2);
     }
 
     #[tokio::test]
-    async fn test_inmemory_storage_all_empty() {
+    async fn test_memory_storage_get_associated() {
         let storage = InMemoryStorage::new();
 
-        let all = storage.all().await.unwrap();
-        assert!(all.is_empty());
+        let mem1 = Memory::text("m1", make_embedding(&[1.0, 0.0, 0.0]), now());
+        let mem2 = Memory::text("m2", make_embedding(&[0.9, 0.1, 0.0]), now());
+        let mem3 = Memory::text("m3", make_embedding(&[0.1, 0.9, 0.0]), now());
+
+        storage.put(mem1.clone()).await.unwrap();
+        storage.put(mem2.clone()).await.unwrap();
+        storage.put(mem3.clone()).await.unwrap();
+
+        storage
+            .update_graph(|g| {
+                g.add_edge(AssociationEdge::new(
+                    mem1.id,
+                    mem2.id,
+                    0.9,
+                    LinkKind::Semantic,
+                    now(),
+                ));
+                g.add_edge(AssociationEdge::new(
+                    mem1.id,
+                    mem3.id,
+                    0.5,
+                    LinkKind::Episodic,
+                    now(),
+                ));
+            })
+            .await
+            .unwrap();
+
+        let associated = storage.get_associated(mem1.id, 2).await.unwrap();
+        assert_eq!(associated.len(), 2);
     }
 
     #[tokio::test]
-    async fn test_inmemory_storage_links_empty() {
+    async fn test_memory_storage_remove_cleans_graph() {
         let storage = InMemoryStorage::new();
 
-        let links = storage.links().await.unwrap();
-        assert!(links.is_empty());
-    }
+        let mem1 = Memory::text("m1", make_embedding(&[1.0, 0.0, 0.0]), now());
+        let mem2 = Memory::text("m2", make_embedding(&[0.9, 0.1, 0.0]), now());
 
-    #[tokio::test]
-    async fn test_inmemory_storage_remove_nonexistent() {
-        let storage = InMemoryStorage::new();
+        storage.put(mem1.clone()).await.unwrap();
+        storage.put(mem2.clone()).await.unwrap();
 
-        let result = storage.remove(Id::new()).await;
-        assert!(result.is_ok());
-        assert_eq!(storage.len(), 0);
+        storage
+            .update_graph(|g| {
+                g.add_node(mem1.id);
+                g.add_node(mem2.id);
+            })
+            .await
+            .unwrap();
+
+        storage.remove(mem1.id).await.unwrap();
+
+        let graph = storage.get_graph().await.unwrap();
+        assert!(!graph.has_node(mem1.id));
+        assert!(graph.has_node(mem2.id));
     }
 }

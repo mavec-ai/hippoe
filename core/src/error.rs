@@ -17,9 +17,6 @@ pub enum Error {
     #[error("invalid min_score: {0} (must be >= 0)")]
     InvalidMinScore(f64),
 
-    #[error("invalid boost_cap: {0} (must be >= 1.0)")]
-    InvalidBoostCap(f64),
-
     #[error("invalid emotion_weight: {0} (must be >= 0)")]
     InvalidEmotionWeight(f64),
 
