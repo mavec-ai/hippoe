@@ -140,7 +140,9 @@ impl MemoryQuery {
             }
         }
 
-        if let Some(min_imp) = self.min_importance && memory.metadata.importance < min_imp {
+        if let Some(min_imp) = self.min_importance
+            && memory.metadata.importance < min_imp
+        {
             return false;
         }
 
@@ -159,11 +161,8 @@ impl MemoryQuery {
     }
 
     pub fn into_context(self) -> RetrievalContext {
-        let mut ctx = RetrievalContext::new(
-            self.probe.unwrap_or_default(),
-            now(),
-        )
-        .with_max_results(self.max_results);
+        let mut ctx = RetrievalContext::new(self.probe.unwrap_or_default(), now())
+            .with_max_results(self.max_results);
 
         if self.min_similarity > 0.0 {
             ctx = ctx.with_min_threshold(self.min_similarity);
@@ -276,19 +275,19 @@ impl<'a, S: crate::storage::Storage> MemoryQueryBuilder<'a, S> {
                     .await
             };
 
-            let ids: std::collections::HashSet<Id> = 
-                matches.iter().map(|m| m.memory_id).collect();
-            
+            let ids: std::collections::HashSet<Id> = matches.iter().map(|m| m.memory_id).collect();
+
             let mut results: Vec<Memory> = filtered
                 .into_iter()
                 .filter(|m| ids.contains(&m.id))
                 .collect();
 
             if let Some(assoc_id) = self.query.include_associations_of {
-                let associated = self.hippocampus
+                let associated = self
+                    .hippocampus
                     .recall_associated(assoc_id, self.query.association_depth)
                     .await?;
-                
+
                 for mem in associated {
                     if !results.iter().any(|r| r.id == mem.id) {
                         results.push(mem);

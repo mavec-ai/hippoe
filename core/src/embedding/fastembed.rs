@@ -16,8 +16,8 @@ pub struct FastEmbedProvider {
 impl FastEmbedProvider {
     pub fn new(model: EmbeddingModel) -> EmbeddingResult<Self> {
         let options = InitOptions::new(model.clone());
-        let embedding_model = TextEmbedding::try_new(options)
-            .map_err(|e| EmbeddingError::Provider(e.to_string()))?;
+        let embedding_model =
+            TextEmbedding::try_new(options).map_err(|e| EmbeddingError::Provider(e.to_string()))?;
 
         let dimensions = Self::get_dimensions_for_model(&model);
         let model_name = model.to_string();
@@ -36,8 +36,8 @@ impl FastEmbedProvider {
     pub fn with_model_name(model_name: &str, dimensions: usize) -> EmbeddingResult<Self> {
         let model = Self::model_from_name(model_name)?;
         let options = InitOptions::new(model.clone());
-        let embedding_model = TextEmbedding::try_new(options)
-            .map_err(|e| EmbeddingError::Provider(e.to_string()))?;
+        let embedding_model =
+            TextEmbedding::try_new(options).map_err(|e| EmbeddingError::Provider(e.to_string()))?;
 
         Ok(Self {
             model: Arc::new(Mutex::new(embedding_model)),

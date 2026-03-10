@@ -1,8 +1,8 @@
 #![allow(clippy::expect_used)]
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use hippoe_core::{Id, InMemoryStorage, Memory, MemoryBuilder, Storage};
 use hippoe_core::types::{LinkKind, now};
+use hippoe_core::{Id, InMemoryStorage, Memory, MemoryBuilder, Storage};
 use rand::Rng;
 use std::sync::Arc;
 use tokio::runtime::Runtime;

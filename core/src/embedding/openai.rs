@@ -84,9 +84,7 @@ struct EmbeddingData {
 impl EmbeddingProvider for OpenAIProvider {
     async fn embed(&self, text: &str) -> EmbeddingResult<Vec<f64>> {
         if self.api_key.is_empty() {
-            return Err(EmbeddingError::Config(
-                "OPENAI_API_KEY not set".to_string(),
-            ));
+            return Err(EmbeddingError::Config("OPENAI_API_KEY not set".to_string()));
         }
 
         let client = reqwest::Client::new();
@@ -129,9 +127,7 @@ impl EmbeddingProvider for OpenAIProvider {
 
     async fn embed_batch(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f64>>> {
         if self.api_key.is_empty() {
-            return Err(EmbeddingError::Config(
-                "OPENAI_API_KEY not set".to_string(),
-            ));
+            return Err(EmbeddingError::Config("OPENAI_API_KEY not set".to_string()));
         }
 
         let client = reqwest::Client::new();

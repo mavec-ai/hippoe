@@ -1,6 +1,4 @@
-use hippoe_core::{
-    Hippocampus, InMemoryStorage, MemoryBuilder,
-};
+use hippoe_core::{Hippocampus, InMemoryStorage, MemoryBuilder};
 
 fn generate_embedding(dim: usize, seed: f64) -> Vec<f64> {
     let mut embedding = Vec::with_capacity(dim);
@@ -52,7 +50,8 @@ fn main() {
 
     rt.block_on(async {
         let query_embedding = generate_embedding(128, 0.85);
-        let results = hippoe.query()
+        let results = hippoe
+            .query()
             .similar_to(query_embedding)
             .max_results(3)
             .execute()
@@ -60,9 +59,16 @@ fn main() {
             .unwrap();
 
         for (rank, mem) in results.iter().enumerate() {
-            println!("#{} - {}", rank + 1, mem.content.text.as_deref().unwrap_or("?"));
+            println!(
+                "#{} - {}",
+                rank + 1,
+                mem.content.text.as_deref().unwrap_or("?")
+            );
             println!("    Importance: {:.2}", mem.metadata.importance);
-            println!("    Created: {} ms ago", now.saturating_sub(mem.metadata.created_at));
+            println!(
+                "    Created: {} ms ago",
+                now.saturating_sub(mem.metadata.created_at)
+            );
             println!();
         }
     });
@@ -79,7 +85,8 @@ fn main() {
 
         hippoe.memorize(tagged_memory).await.unwrap();
 
-        let results = hippoe.query()
+        let results = hippoe
+            .query()
             .with_tags(vec!["work".to_string()])
             .max_results(5)
             .execute()

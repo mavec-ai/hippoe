@@ -87,7 +87,11 @@ impl AssociationBuilder {
             associations.extend(temporal);
         }
 
-        associations.sort_by(|a, b| b.strength.total_cmp(&a.strength));
+        associations.sort_by(|a, b| {
+            b.strength
+                .total_cmp(&a.strength)
+                .then_with(|| a.target_id.0.cmp(&b.target_id.0))
+        });
         associations.truncate(self.max_associations);
 
         for association in associations {
@@ -119,7 +123,11 @@ impl AssociationBuilder {
         let mut result = Vec::new();
         for (i, sim) in similarities.iter().enumerate() {
             if *sim >= self.semantic_threshold {
-                result.push(Association::semantic(existing_memories[i].id, *sim, current_time));
+                result.push(Association::semantic(
+                    existing_memories[i].id,
+                    *sim,
+                    current_time,
+                ));
             }
         }
         result
@@ -149,8 +157,13 @@ impl AssociationBuilder {
                 .count();
 
             if tag_overlap > 0 {
-                let total_tags = new_memory.metadata.tags.len().max(memory.metadata.tags.len());
-                let strength = (tag_overlap as f64 / total_tags as f64).max(self.episodic_threshold);
+                let total_tags = new_memory
+                    .metadata
+                    .tags
+                    .len()
+                    .max(memory.metadata.tags.len());
+                let strength =
+                    (tag_overlap as f64 / total_tags as f64).max(self.episodic_threshold);
                 associations.push(Association::episodic(memory.id, strength, current_time));
             }
 
@@ -199,7 +212,11 @@ impl AssociationBuilder {
             .into_iter()
             .filter(|(recency, _)| *recency >= self.temporal_threshold)
             .map(|(recency, memory)| {
-                Association::temporal(memory.id, recency.max(self.temporal_threshold), current_time)
+                Association::temporal(
+                    memory.id,
+                    recency.max(self.temporal_threshold),
+                    current_time,
+                )
             })
             .collect()
     }
@@ -207,10 +224,8 @@ impl AssociationBuilder {
     fn compute_keyword_overlap(&self, text1: &str, text2: &str) -> f64 {
         let text1_lower = text1.to_lowercase();
         let text2_lower = text2.to_lowercase();
-        let words1: std::collections::HashSet<&str> =
-            text1_lower.split_whitespace().collect();
-        let words2: std::collections::HashSet<&str> =
-            text2_lower.split_whitespace().collect();
+        let words1: std::collections::HashSet<&str> = text1_lower.split_whitespace().collect();
+        let words2: std::collections::HashSet<&str> = text2_lower.split_whitespace().collect();
 
         if words1.is_empty() || words2.is_empty() {
             return 0.0;
@@ -264,9 +279,8 @@ impl AssociationBuilder {
     ) {
         if let Some(edge) = graph.get_edge(from, to, kind) {
             let new_strength = (edge.strength + increment).min(1.0);
-            let new_edge = crate::memory::graph::AssociationEdge::new(
-                from, to, new_strength, kind, at,
-            );
+            let new_edge =
+                crate::memory::graph::AssociationEdge::new(from, to, new_strength, kind, at);
             graph.add_edge(new_edge);
         }
     }
@@ -293,7 +307,12 @@ pub fn compute_association_strength(memory1: &Memory, memory2: &Memory) -> f64 {
             .iter()
             .filter(|tag| memory2.metadata.tags.contains(tag))
             .count();
-        let total = memory1.metadata.tags.len().max(memory2.metadata.tags.len()).max(1);
+        let total = memory1
+            .metadata
+            .tags
+            .len()
+            .max(memory2.metadata.tags.len())
+            .max(1);
         (overlap as f64 / total as f64) * 0.2
     };
 
@@ -319,9 +338,9 @@ fn compute_cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Embedding;
     use crate::memory::MemoryBuilder;
     use crate::types::now;
-    use crate::Embedding;
 
     fn make_embedding(values: &[f64]) -> Embedding {
         let norm: f64 = values.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -408,15 +427,21 @@ mod tests {
         let mem1 = Memory::text("memory 1", make_embedding(&[1.0, 0.0, 0.0]), base_time);
 
         let mem2 = {
-            let mut m =
-                Memory::text("memory 2", make_embedding(&[1.0, 0.0, 0.0]), base_time + 30_000);
+            let mut m = Memory::text(
+                "memory 2",
+                make_embedding(&[1.0, 0.0, 0.0]),
+                base_time + 30_000,
+            );
             m.metadata.created_at = base_time + 30_000;
             m
         };
 
         let mem3 = {
-            let mut m =
-                Memory::text("memory 3", make_embedding(&[1.0, 0.0, 0.0]), base_time + 120_000);
+            let mut m = Memory::text(
+                "memory 3",
+                make_embedding(&[1.0, 0.0, 0.0]),
+                base_time + 120_000,
+            );
             m.metadata.created_at = base_time + 120_000;
             m
         };
@@ -446,16 +471,18 @@ mod tests {
 
         let mut graph = AssociationGraph::new();
 
-        builder.build_bidirectional(
-            &mem1,
-            &mem2,
-            0.8,
-            LinkKind::Semantic,
-            &mut graph,
-        );
+        builder.build_bidirectional(&mem1, &mem2, 0.8, LinkKind::Semantic, &mut graph);
 
-        assert!(graph.get_edge(mem1.id, mem2.id, LinkKind::Semantic).is_some());
-        assert!(graph.get_edge(mem2.id, mem1.id, LinkKind::Semantic).is_some());
+        assert!(
+            graph
+                .get_edge(mem1.id, mem2.id, LinkKind::Semantic)
+                .is_some()
+        );
+        assert!(
+            graph
+                .get_edge(mem2.id, mem1.id, LinkKind::Semantic)
+                .is_some()
+        );
     }
 
     #[test]

@@ -1,6 +1,4 @@
-use hippoe_core::{
-    CognitiveRetrieval, Hippocampus, InMemoryStorage, MemoryBuilder,
-};
+use hippoe_core::{CognitiveRetrieval, Hippocampus, InMemoryStorage, MemoryBuilder};
 
 fn generate_embedding(dim: usize, values: &[f64]) -> Vec<f64> {
     let mut embedding = Vec::with_capacity(dim);
@@ -58,7 +56,8 @@ fn main() {
     println!("1. Basic similarity query:\n");
     rt.block_on(async {
         let probe = generate_embedding(64, &[0.9, 0.5]);
-        let results = hippoe.query()
+        let results = hippoe
+            .query()
             .similar_to(probe)
             .max_results(3)
             .execute()
@@ -66,13 +65,18 @@ fn main() {
             .unwrap();
 
         for (i, mem) in results.iter().enumerate() {
-            println!("  #{} - {}", i + 1, mem.content.text.as_deref().unwrap_or("?"));
+            println!(
+                "  #{} - {}",
+                i + 1,
+                mem.content.text.as_deref().unwrap_or("?")
+            );
         }
     });
 
     println!("\n2. Filter by tag:\n");
     rt.block_on(async {
-        let results = hippoe.query()
+        let results = hippoe
+            .query()
             .with_tag("work")
             .max_results(5)
             .execute()
@@ -80,7 +84,8 @@ fn main() {
             .unwrap();
 
         for (i, mem) in results.iter().enumerate() {
-            println!("  #{} - {} [tags: {:?}]",
+            println!(
+                "  #{} - {} [tags: {:?}]",
                 i + 1,
                 mem.content.text.as_deref().unwrap_or("?"),
                 mem.metadata.tags
@@ -90,7 +95,8 @@ fn main() {
 
     println!("\n3. Filter by minimum importance:\n");
     rt.block_on(async {
-        let results = hippoe.query()
+        let results = hippoe
+            .query()
             .with_min_importance(0.8)
             .max_results(5)
             .execute()
@@ -98,7 +104,8 @@ fn main() {
             .unwrap();
 
         for (i, mem) in results.iter().enumerate() {
-            println!("  #{} - {} (importance: {:.2})",
+            println!(
+                "  #{} - {} (importance: {:.2})",
                 i + 1,
                 mem.content.text.as_deref().unwrap_or("?"),
                 mem.metadata.importance
@@ -109,7 +116,8 @@ fn main() {
     println!("\n4. Combined filters:\n");
     rt.block_on(async {
         let probe = generate_embedding(64, &[0.85, 0.5]);
-        let results = hippoe.query()
+        let results = hippoe
+            .query()
             .similar_to(probe)
             .with_tag("programming")
             .min_similarity(0.0)
@@ -119,17 +127,21 @@ fn main() {
             .unwrap();
 
         for (i, mem) in results.iter().enumerate() {
-            println!("  #{} - {}", i + 1, mem.content.text.as_deref().unwrap_or("?"));
+            println!(
+                "  #{} - {}",
+                i + 1,
+                mem.content.text.as_deref().unwrap_or("?")
+            );
         }
     });
 
     println!("\n5. With custom retrieval strategy (CognitiveRetrieval):\n");
     rt.block_on(async {
         let probe = generate_embedding(64, &[0.9, 0.5]);
-        let strategy = CognitiveRetrieval::new()
-            .with_emotional_weight(0.6);
+        let strategy = CognitiveRetrieval::new().with_emotional_weight(0.6);
 
-        let results = hippoe.query()
+        let results = hippoe
+            .query()
             .similar_to(probe)
             .with_strategy(Box::new(strategy))
             .max_results(3)
@@ -139,7 +151,8 @@ fn main() {
 
         for (i, m) in results.iter().enumerate() {
             let mem = hippoe.get(m.memory_id).await.unwrap().unwrap();
-            println!("  #{} - {} (prob: {:.4})",
+            println!(
+                "  #{} - {} (prob: {:.4})",
                 i + 1,
                 mem.content.text.as_deref().unwrap_or("?"),
                 m.probability

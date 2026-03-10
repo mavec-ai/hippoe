@@ -4,7 +4,7 @@ use tokio::sync::RwLock;
 
 use super::{
     Storage,
-    common::{memory_to_row, row_to_memory, MemoryRow},
+    common::{MemoryRow, memory_to_row, row_to_memory},
 };
 use crate::error::{Error, Result};
 use crate::memory::{AssociationGraph, Memory};
@@ -46,7 +46,10 @@ impl SqliteStorage {
                 tags BLOB NOT NULL,
                 lability REAL NOT NULL,
                 consolidation_threshold REAL NOT NULL,
-                associations BLOB NOT NULL
+                consolidation_state TEXT NOT NULL DEFAULT 'fresh',
+                last_consolidation_at INTEGER NOT NULL DEFAULT 0,
+                associations BLOB NOT NULL,
+                temporal_links BLOB NOT NULL
             )
         "#,
         )
@@ -71,7 +74,7 @@ impl Storage for SqliteStorage {
     async fn get(&self, id: Id) -> Result<Option<Memory>> {
         let pool = self.pool.read().await;
         let row = sqlx::query_as::<_, MemoryRow>(
-            "SELECT id, content_text, content_structured, content_raw, embedding, created_at, updated_at, last_accessed_at, access_count, access_timestamps, emotion_valence, emotion_arousal, decay_rate, importance, context, tags, lability, consolidation_threshold, associations FROM memories WHERE id = ?"
+            "SELECT id, content_text, content_structured, content_raw, embedding, created_at, updated_at, last_accessed_at, access_count, access_timestamps, emotion_valence, emotion_arousal, decay_rate, importance, context, tags, lability, consolidation_threshold, consolidation_state, last_consolidation_at, associations, temporal_links FROM memories WHERE id = ?"
         )
         .bind(id.to_string())
         .fetch_optional(&*pool)
@@ -90,8 +93,8 @@ impl Storage for SqliteStorage {
 
         sqlx::query(r#"
             INSERT OR REPLACE INTO memories 
-            (id, content_text, content_structured, content_raw, embedding, created_at, updated_at, last_accessed_at, access_count, access_timestamps, emotion_valence, emotion_arousal, decay_rate, importance, context, tags, lability, consolidation_threshold, associations)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, content_text, content_structured, content_raw, embedding, created_at, updated_at, last_accessed_at, access_count, access_timestamps, emotion_valence, emotion_arousal, decay_rate, importance, context, tags, lability, consolidation_threshold, consolidation_state, last_consolidation_at, associations, temporal_links)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#)
         .bind(&row.id)
         .bind(&row.content_text)
@@ -111,7 +114,10 @@ impl Storage for SqliteStorage {
         .bind(&row.tags)
         .bind(row.lability)
         .bind(row.consolidation_threshold)
+        .bind(&row.consolidation_state)
+        .bind(row.last_consolidation_at as i64)
         .bind(&row.associations)
+        .bind(&row.temporal_links)
         .execute(&*pool)
         .await
         .map_err(|e| Error::Storage(e.to_string()))?;
@@ -136,27 +142,25 @@ impl Storage for SqliteStorage {
             .execute(&*pool)
             .await
             .map_err(|e| Error::Storage(e.to_string()))?;
-        
+
         let mut len = self.len.write().await;
         if *len > 0 {
             *len -= 1;
         }
-        
+
         Ok(())
     }
 
     async fn all(&self) -> Result<Vec<Memory>> {
         let pool = self.pool.read().await;
         let rows = sqlx::query_as::<_, MemoryRow>(
-            "SELECT id, content_text, content_structured, content_raw, embedding, created_at, updated_at, last_accessed_at, access_count, access_timestamps, emotion_valence, emotion_arousal, decay_rate, importance, context, tags, lability, consolidation_threshold, associations FROM memories"
+            "SELECT id, content_text, content_structured, content_raw, embedding, created_at, updated_at, last_accessed_at, access_count, access_timestamps, emotion_valence, emotion_arousal, decay_rate, importance, context, tags, lability, consolidation_threshold, consolidation_state, last_consolidation_at, associations, temporal_links FROM memories"
         )
         .fetch_all(&*pool)
         .await
         .map_err(|e| Error::Storage(e.to_string()))?;
 
-        rows.into_iter()
-            .map(row_to_memory)
-            .collect()
+        rows.into_iter().map(row_to_memory).collect()
     }
 
     fn len(&self) -> usize {
@@ -206,7 +210,12 @@ impl Storage for SqliteStorage {
                 if m.embedding.len() != embedding.len() {
                     return None;
                 }
-                let dot: f64 = m.embedding.iter().zip(embedding.iter()).map(|(a, b)| a * b).sum();
+                let dot: f64 = m
+                    .embedding
+                    .iter()
+                    .zip(embedding.iter())
+                    .map(|(a, b)| a * b)
+                    .sum();
                 let norm_a: f64 = m.embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
                 let norm_b: f64 = embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
                 if norm_a > 0.0 && norm_b > 0.0 {

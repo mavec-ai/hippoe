@@ -1,10 +1,7 @@
 #![allow(clippy::expect_used)]
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use hippoe_core::{
-    Hippocampus, InMemoryStorage, MemoryBuilder, similarity,
-    similarity_batch,
-};
+use hippoe_core::{Hippocampus, InMemoryStorage, MemoryBuilder, similarity, similarity_batch};
 use rand::Rng;
 
 fn generate_embeddings(count: usize, dimensions: usize) -> Vec<Vec<f64>> {
@@ -85,45 +82,7 @@ fn bench_recall(c: &mut Criterion) {
             BenchmarkId::new("memories", memory_count),
             &memory_count,
             |bench, _| {
-                bench.iter(|| {
-                    black_box(rt.block_on(hippoe.recall(black_box(probe.clone()))))
-                });
-            },
-        );
-    }
-
-    group.finish();
-}
-
-fn bench_recall_with_spreading(c: &mut Criterion) {
-    let mut group = c.benchmark_group("recall_with_spreading");
-
-    let dim = 512;
-    let now = 1_000_000_000_u64;
-
-    for &memory_count in &[100, 500, 1000] {
-        let storage = InMemoryStorage::new();
-        let hippoe = Hippocampus::new(storage).unwrap();
-
-        let probe = generate_embeddings(1, dim).pop().unwrap();
-        let embeddings = generate_embeddings(memory_count, dim);
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            for embedding in embeddings {
-                let memory = MemoryBuilder::new(embedding, now).build();
-                hippoe.memorize(memory).await.unwrap();
-            }
-        });
-
-        let _ = group.throughput(Throughput::Elements(memory_count as u64));
-        let _ = group.bench_with_input(
-            BenchmarkId::new("memories", memory_count),
-            &memory_count,
-            |bench, _| {
-                bench.iter(|| {
-                    black_box(rt.block_on(hippoe.recall(black_box(probe.clone()))))
-                });
+                bench.iter(|| black_box(rt.block_on(hippoe.recall(black_box(probe.clone())))));
             },
         );
     }
@@ -136,7 +95,6 @@ criterion_group!(
     bench_similarity,
     bench_similarity_batch,
     bench_recall,
-    bench_recall_with_spreading,
 );
 
 criterion_main!(benches);

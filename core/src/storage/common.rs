@@ -28,7 +28,10 @@ pub struct MemoryRow {
     pub tags: Vec<u8>,
     pub lability: f64,
     pub consolidation_threshold: f64,
+    pub consolidation_state: String,
+    pub last_consolidation_at: u64,
     pub associations: Vec<u8>,
+    pub temporal_links: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,7 +54,10 @@ pub struct MemoryData {
     pub tags: Vec<String>,
     pub lability: f64,
     pub consolidation_threshold: f64,
+    pub consolidation_state: String,
+    pub last_consolidation_at: u64,
     pub associations: Vec<AssociationData>,
+    pub temporal_links: Vec<TemporalLinkData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +68,16 @@ pub struct AssociationData {
     pub created_at: u64,
     pub last_activated: u64,
     pub activation_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemporalLinkData {
+    pub source_id: String,
+    pub target_id: String,
+    pub forward_strength: f64,
+    pub backward_strength: f64,
+    pub temporal_distance: usize,
+    pub created_at: u64,
 }
 
 fn link_kind_to_string(kind: LinkKind) -> String {
@@ -80,6 +96,24 @@ fn string_to_link_kind(s: &str) -> LinkKind {
         "temporal" => LinkKind::Temporal,
         "causal" => LinkKind::Causal,
         _ => LinkKind::Semantic,
+    }
+}
+
+fn consolidation_state_to_string(state: crate::memory::ConsolidationState) -> String {
+    match state {
+        crate::memory::ConsolidationState::Fresh => "fresh".to_string(),
+        crate::memory::ConsolidationState::Consolidating => "consolidating".to_string(),
+        crate::memory::ConsolidationState::Consolidated => "consolidated".to_string(),
+        crate::memory::ConsolidationState::Reconsolidating => "reconsolidating".to_string(),
+    }
+}
+
+fn string_to_consolidation_state(s: &str) -> crate::memory::ConsolidationState {
+    match s {
+        "consolidating" => crate::memory::ConsolidationState::Consolidating,
+        "consolidated" => crate::memory::ConsolidationState::Consolidated,
+        "reconsolidating" => crate::memory::ConsolidationState::Reconsolidating,
+        _ => crate::memory::ConsolidationState::Fresh,
     }
 }
 
@@ -105,6 +139,21 @@ pub fn memory_to_row(memory: &Memory) -> Result<MemoryRow> {
             .collect::<Vec<_>>(),
     )
     .map_err(|e| Error::Serialization(e.to_string()))?;
+    let temporal_links = bincode::serialize(
+        &memory
+            .temporal_links
+            .iter()
+            .map(|tl| TemporalLinkData {
+                source_id: tl.source_id.to_string(),
+                target_id: tl.target_id.to_string(),
+                forward_strength: tl.forward_strength,
+                backward_strength: tl.backward_strength,
+                temporal_distance: tl.temporal_distance,
+                created_at: tl.created_at,
+            })
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| Error::Serialization(e.to_string()))?;
 
     Ok(MemoryRow {
         id: memory.id.to_string(),
@@ -125,7 +174,10 @@ pub fn memory_to_row(memory: &Memory) -> Result<MemoryRow> {
         tags,
         lability: memory.metadata.lability,
         consolidation_threshold: memory.metadata.consolidation_threshold,
+        consolidation_state: consolidation_state_to_string(memory.metadata.consolidation_state),
+        last_consolidation_at: memory.metadata.last_consolidation_at,
         associations,
+        temporal_links,
     })
 }
 
@@ -143,6 +195,8 @@ pub fn row_to_memory(row: MemoryRow) -> Result<Memory> {
         bincode::deserialize(&row.tags).map_err(|e| Error::Serialization(e.to_string()))?;
     let association_data: Vec<AssociationData> =
         bincode::deserialize(&row.associations).map_err(|e| Error::Serialization(e.to_string()))?;
+    let temporal_link_data: Vec<TemporalLinkData> = bincode::deserialize(&row.temporal_links)
+        .map_err(|e| Error::Serialization(e.to_string()))?;
 
     let associations: Vec<Association> = association_data
         .into_iter()
@@ -158,9 +212,27 @@ pub fn row_to_memory(row: MemoryRow) -> Result<Memory> {
         })
         .collect();
 
+    let temporal_links: Vec<crate::memory::TemporalLink> = temporal_link_data
+        .into_iter()
+        .filter_map(|tl| {
+            let source_id = tl.source_id.parse::<Id>().ok()?;
+            let target_id = tl.target_id.parse::<Id>().ok()?;
+            Some(crate::memory::TemporalLink {
+                source_id,
+                target_id,
+                forward_strength: tl.forward_strength,
+                backward_strength: tl.backward_strength,
+                temporal_distance: tl.temporal_distance,
+                created_at: tl.created_at,
+            })
+        })
+        .collect();
+
     let content = MemoryContent {
         text: row.content_text,
-        structured: row.content_structured.and_then(|s| serde_json::from_str(&s).ok()),
+        structured: row
+            .content_structured
+            .and_then(|s| serde_json::from_str(&s).ok()),
         raw: row.content_raw,
     };
 
@@ -184,8 +256,11 @@ pub fn row_to_memory(row: MemoryRow) -> Result<Memory> {
             tags,
             lability: row.lability,
             consolidation_threshold: row.consolidation_threshold,
+            consolidation_state: string_to_consolidation_state(&row.consolidation_state),
+            last_consolidation_at: row.last_consolidation_at,
         },
         associations,
+        temporal_links,
     })
 }
 
@@ -209,6 +284,8 @@ pub fn memory_to_data(memory: &Memory) -> MemoryData {
         tags: memory.metadata.tags.clone(),
         lability: memory.metadata.lability,
         consolidation_threshold: memory.metadata.consolidation_threshold,
+        consolidation_state: consolidation_state_to_string(memory.metadata.consolidation_state),
+        last_consolidation_at: memory.metadata.last_consolidation_at,
         associations: memory
             .associations
             .iter()
@@ -219,6 +296,18 @@ pub fn memory_to_data(memory: &Memory) -> MemoryData {
                 created_at: a.created_at,
                 last_activated: a.last_activated,
                 activation_count: a.activation_count,
+            })
+            .collect(),
+        temporal_links: memory
+            .temporal_links
+            .iter()
+            .map(|tl| TemporalLinkData {
+                source_id: tl.source_id.to_string(),
+                target_id: tl.target_id.to_string(),
+                forward_strength: tl.forward_strength,
+                backward_strength: tl.backward_strength,
+                temporal_distance: tl.temporal_distance,
+                created_at: tl.created_at,
             })
             .collect(),
     }
@@ -245,9 +334,28 @@ pub fn data_to_memory(data: MemoryData) -> Result<Memory> {
         })
         .collect();
 
+    let temporal_links: Vec<crate::memory::TemporalLink> = data
+        .temporal_links
+        .into_iter()
+        .filter_map(|tl| {
+            let source_id = tl.source_id.parse::<Id>().ok()?;
+            let target_id = tl.target_id.parse::<Id>().ok()?;
+            Some(crate::memory::TemporalLink {
+                source_id,
+                target_id,
+                forward_strength: tl.forward_strength,
+                backward_strength: tl.backward_strength,
+                temporal_distance: tl.temporal_distance,
+                created_at: tl.created_at,
+            })
+        })
+        .collect();
+
     let content = MemoryContent {
         text: data.content_text,
-        structured: data.content_structured.and_then(|s| serde_json::from_str(&s).ok()),
+        structured: data
+            .content_structured
+            .and_then(|s| serde_json::from_str(&s).ok()),
         raw: data.content_raw,
     };
 
@@ -271,7 +379,10 @@ pub fn data_to_memory(data: MemoryData) -> Result<Memory> {
             tags: data.tags,
             lability: data.lability,
             consolidation_threshold: data.consolidation_threshold,
+            consolidation_state: string_to_consolidation_state(&data.consolidation_state),
+            last_consolidation_at: data.last_consolidation_at,
         },
         associations,
+        temporal_links,
     })
 }

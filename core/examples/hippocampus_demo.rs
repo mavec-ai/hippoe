@@ -1,9 +1,4 @@
-use hippoe_core::{
-    HippocampusBuilder,
-    LinkKind,
-    memory::MemoryBuilder,
-    storage::InMemoryStorage,
-};
+use hippoe_core::{HippocampusBuilder, LinkKind, memory::MemoryBuilder, storage::InMemoryStorage};
 
 fn generate_embedding(dim: usize, values: &[f64]) -> Vec<f64> {
     let mut embedding = Vec::with_capacity(dim);
@@ -51,11 +46,26 @@ fn main() {
 
     let memory_ids: Vec<_> = rt.block_on(async {
         let memories_data = vec![
-            ("Birthday party celebration", 0.9, 0.9, vec!["personal", "happy"]),
-            ("Project deadline reminder", 0.7, 0.6, vec!["work", "stress"]),
+            (
+                "Birthday party celebration",
+                0.9,
+                0.9,
+                vec!["personal", "happy"],
+            ),
+            (
+                "Project deadline reminder",
+                0.7,
+                0.6,
+                vec!["work", "stress"],
+            ),
             ("Team building event", 0.5, 0.8, vec!["work", "social"]),
             ("Important presentation", 0.8, 0.7, vec!["work"]),
-            ("Weekend hiking trip", 0.6, 0.85, vec!["personal", "outdoor"]),
+            (
+                "Weekend hiking trip",
+                0.6,
+                0.85,
+                vec!["personal", "outdoor"],
+            ),
         ];
 
         let mut ids = Vec::new();
@@ -74,7 +84,10 @@ fn main() {
             let id = hippoe.memorize(memory).await.unwrap();
             ids.push(id);
 
-            println!("  '{}' (importance: {:.1}, emotion: {:.1})", text, importance, emotion);
+            println!(
+                "  '{}' (importance: {:.1}, emotion: {:.1})",
+                text, importance, emotion
+            );
         }
         ids
     });
@@ -86,12 +99,18 @@ fn main() {
         let coffee = memory_ids[2];
         let hiking = memory_ids[4];
 
-        hippoe.create_association(birthday, coffee, 0.8, LinkKind::Semantic)
-            .await.unwrap();
-        hippoe.create_association(coffee, hiking, 0.6, LinkKind::Episodic)
-            .await.unwrap();
-        hippoe.create_association(birthday, hiking, 0.5, LinkKind::Semantic)
-            .await.unwrap();
+        hippoe
+            .create_association(birthday, coffee, 0.8, LinkKind::Semantic)
+            .await
+            .unwrap();
+        hippoe
+            .create_association(coffee, hiking, 0.6, LinkKind::Episodic)
+            .await
+            .unwrap();
+        hippoe
+            .create_association(birthday, hiking, 0.5, LinkKind::Semantic)
+            .await
+            .unwrap();
 
         println!("  Birthday <-> Team building (0.8)");
         println!("  Team building <-> Hiking (0.6)");
@@ -106,15 +125,15 @@ fn main() {
 
         for (rank, m) in matches.iter().enumerate() {
             let mem = hippoe.get(m.memory_id).await.unwrap().unwrap();
-            println!("#{} - {} (prob: {:.4})", 
+            println!(
+                "#{} - {} (prob: {:.4})",
                 rank + 1,
                 mem.content.text.as_deref().unwrap_or("?"),
                 m.probability
             );
-            println!("     Similarity: {:.4}, Base Level: {:.4}, Spreading: {:.4}",
-                m.scores.similarity,
-                m.scores.base_level,
-                m.scores.spreading
+            println!(
+                "     Similarity: {:.4}, Base Level: {:.4}, Spreading: {:.4}",
+                m.scores.similarity, m.scores.base_level, m.scores.spreading
             );
         }
     });
@@ -154,7 +173,10 @@ fn main() {
 
         println!("Importance before recall: {:.4}", importance_before);
         println!("Importance after recall: {:.4}", importance_after);
-        println!("Boost: {:.2}%", (importance_after / importance_before - 1.0) * 100.0);
+        println!(
+            "Boost: {:.2}%",
+            (importance_after / importance_before - 1.0) * 100.0
+        );
     });
 
     println!("\n8. Forget (delete) a memory...\n");

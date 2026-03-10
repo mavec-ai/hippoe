@@ -102,29 +102,30 @@ impl Storage for RedisStorage {
         }
 
         let conn = self.conn.clone();
-        let memories: Vec<Memory> = futures::future::try_join_all(keys.into_iter().map(move |key| {
-            let conn = conn.clone();
-            async move {
-                let mut conn = conn.write().await;
-                let data: Option<Vec<u8>> = conn
-                    .get(&key)
-                    .await
-                    .map_err(|e| Error::Storage(e.to_string()))?;
+        let memories: Vec<Memory> =
+            futures::future::try_join_all(keys.into_iter().map(move |key| {
+                let conn = conn.clone();
+                async move {
+                    let mut conn = conn.write().await;
+                    let data: Option<Vec<u8>> = conn
+                        .get(&key)
+                        .await
+                        .map_err(|e| Error::Storage(e.to_string()))?;
 
-                match data {
-                    Some(bytes) => {
-                        let memory_data = bincode::deserialize(&bytes)
-                            .map_err(|e| Error::Serialization(e.to_string()))?;
-                        Ok(Some(data_to_memory(memory_data)?))
+                    match data {
+                        Some(bytes) => {
+                            let memory_data = bincode::deserialize(&bytes)
+                                .map_err(|e| Error::Serialization(e.to_string()))?;
+                            Ok(Some(data_to_memory(memory_data)?))
+                        }
+                        None => Ok(None),
                     }
-                    None => Ok(None),
                 }
-            }
-        }))
-        .await?
-        .into_iter()
-        .flatten()
-        .collect();
+            }))
+            .await?
+            .into_iter()
+            .flatten()
+            .collect();
 
         Ok(memories)
     }
@@ -176,7 +177,12 @@ impl Storage for RedisStorage {
                 if m.embedding.len() != embedding.len() {
                     return None;
                 }
-                let dot: f64 = m.embedding.iter().zip(embedding.iter()).map(|(a, b)| a * b).sum();
+                let dot: f64 = m
+                    .embedding
+                    .iter()
+                    .zip(embedding.iter())
+                    .map(|(a, b)| a * b)
+                    .sum();
                 let norm_a: f64 = m.embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
                 let norm_b: f64 = embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
                 if norm_a > 0.0 && norm_b > 0.0 {

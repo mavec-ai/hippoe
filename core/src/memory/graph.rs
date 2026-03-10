@@ -39,7 +39,8 @@ impl AssociationEdge {
     }
 
     pub fn decay(&mut self, current_time: Timestamp, decay_rate: f64) {
-        let time_since_activation = current_time.saturating_sub(self.last_activated) as f64 / 1000.0;
+        let time_since_activation =
+            current_time.saturating_sub(self.last_activated) as f64 / 1000.0;
         let decay_factor = (-decay_rate * time_since_activation).exp();
         self.strength *= decay_factor;
     }
@@ -75,22 +76,25 @@ impl AssociationGraph {
         self.nodes.insert(edge.from);
         self.nodes.insert(edge.to);
 
-        if let Some(existing) = self
-            .edges
-            .get_mut(&edge.from)
-            .and_then(|edges| edges.iter_mut().find(|e| e.to == edge.to && e.kind == edge.kind))
-        {
+        if let Some(existing) = self.edges.get_mut(&edge.from).and_then(|edges| {
+            edges
+                .iter_mut()
+                .find(|e| e.to == edge.to && e.kind == edge.kind)
+        }) {
             existing.strength = (existing.strength + edge.strength).min(1.0);
             existing.activate(edge.last_activated);
+
+            if let Some(reverse_existing) = self.reverse_edges.get_mut(&edge.to).and_then(|edges| {
+                edges
+                    .iter_mut()
+                    .find(|e| e.from == edge.from && e.kind == edge.kind)
+            }) {
+                reverse_existing.strength = existing.strength;
+                reverse_existing.last_activated = existing.last_activated;
+            }
         } else {
-            self.edges
-                .entry(edge.from)
-                .or_default()
-                .push(edge);
-            self.reverse_edges
-                .entry(edge.to)
-                .or_default()
-                .push(edge);
+            self.edges.entry(edge.from).or_default().push(edge);
+            self.reverse_edges.entry(edge.to).or_default().push(edge);
         }
     }
 
@@ -104,11 +108,33 @@ impl AssociationGraph {
     }
 
     pub fn get_edges_from(&self, id: Id) -> Vec<&AssociationEdge> {
-        self.edges.get(&id).map(|e| e.iter().collect()).unwrap_or_default()
+        let mut edges: Vec<_> = self
+            .edges
+            .get(&id)
+            .map(|e| e.iter().collect())
+            .unwrap_or_default();
+        edges.sort_by(|a, b| {
+            a.strength
+                .total_cmp(&b.strength)
+                .reverse()
+                .then_with(|| a.to.0.cmp(&b.to.0))
+        });
+        edges
     }
 
     pub fn get_edges_to(&self, id: Id) -> Vec<&AssociationEdge> {
-        self.reverse_edges.get(&id).map(|e| e.iter().collect()).unwrap_or_default()
+        let mut edges: Vec<_> = self
+            .reverse_edges
+            .get(&id)
+            .map(|e| e.iter().collect())
+            .unwrap_or_default();
+        edges.sort_by(|a, b| {
+            a.strength
+                .total_cmp(&b.strength)
+                .reverse()
+                .then_with(|| a.from.0.cmp(&b.from.0))
+        });
+        edges
     }
 
     pub fn get_edge(&self, from: Id, to: Id, kind: LinkKind) -> Option<&AssociationEdge> {
@@ -238,11 +264,9 @@ impl AssociationGraph {
 
             for edge in self.get_edges_from(node) {
                 let propagated_activation = activation * edge.strength * decay_factor;
-                
+
                 if propagated_activation > 0.01 {
-                    let new_activation = activations
-                        .entry(edge.to)
-                        .or_insert(0.0);
+                    let new_activation = activations.entry(edge.to).or_insert(0.0);
                     *new_activation += propagated_activation;
 
                     if visited.insert(edge.to) {

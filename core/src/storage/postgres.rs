@@ -1,5 +1,5 @@
-use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::FromRow;
+use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -32,7 +32,10 @@ struct MemoryRowPg {
     tags: Vec<u8>,
     lability: f64,
     consolidation_threshold: f64,
+    consolidation_state: String,
+    last_consolidation_at: i64,
     associations: Vec<u8>,
+    temporal_links: Vec<u8>,
 }
 
 pub struct PostgresStorage {
@@ -69,7 +72,10 @@ impl PostgresStorage {
                 tags BYTEA NOT NULL,
                 lability DOUBLE PRECISION NOT NULL,
                 consolidation_threshold DOUBLE PRECISION NOT NULL,
-                associations BYTEA NOT NULL
+                consolidation_state TEXT NOT NULL DEFAULT 'fresh',
+                last_consolidation_at BIGINT NOT NULL DEFAULT 0,
+                associations BYTEA NOT NULL,
+                temporal_links BYTEA NOT NULL
             )
         "#,
         )
@@ -104,7 +110,10 @@ fn pg_row_to_memory_row(row: MemoryRowPg) -> super::common::MemoryRow {
         tags: row.tags,
         lability: row.lability,
         consolidation_threshold: row.consolidation_threshold,
+        consolidation_state: row.consolidation_state,
+        last_consolidation_at: row.last_consolidation_at as u64,
         associations: row.associations,
+        temporal_links: row.temporal_links,
     }
 }
 
@@ -113,7 +122,7 @@ impl Storage for PostgresStorage {
     async fn get(&self, id: Id) -> Result<Option<Memory>> {
         let pool = self.pool.read().await;
         let row: Option<MemoryRowPg> = sqlx::query_as(
-            "SELECT id, content_text, content_structured, content_raw, embedding, created_at, updated_at, last_accessed_at, access_count, access_timestamps, emotion_valence, emotion_arousal, decay_rate, importance, context, tags, lability, consolidation_threshold, associations FROM memories WHERE id = $1"
+            "SELECT id, content_text, content_structured, content_raw, embedding, created_at, updated_at, last_accessed_at, access_count, access_timestamps, emotion_valence, emotion_arousal, decay_rate, importance, context, tags, lability, consolidation_threshold, consolidation_state, last_consolidation_at, associations, temporal_links FROM memories WHERE id = $1"
         )
         .bind(id.to_string())
         .fetch_optional(&*pool)
@@ -132,8 +141,8 @@ impl Storage for PostgresStorage {
 
         sqlx::query(r#"
             INSERT INTO memories 
-            (id, content_text, content_structured, content_raw, embedding, created_at, updated_at, last_accessed_at, access_count, access_timestamps, emotion_valence, emotion_arousal, decay_rate, importance, context, tags, lability, consolidation_threshold, associations)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+            (id, content_text, content_structured, content_raw, embedding, created_at, updated_at, last_accessed_at, access_count, access_timestamps, emotion_valence, emotion_arousal, decay_rate, importance, context, tags, lability, consolidation_threshold, consolidation_state, last_consolidation_at, associations, temporal_links)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
             ON CONFLICT (id) DO UPDATE SET
                 content_text = EXCLUDED.content_text,
                 content_structured = EXCLUDED.content_structured,
@@ -152,7 +161,10 @@ impl Storage for PostgresStorage {
                 tags = EXCLUDED.tags,
                 lability = EXCLUDED.lability,
                 consolidation_threshold = EXCLUDED.consolidation_threshold,
-                associations = EXCLUDED.associations
+                consolidation_state = EXCLUDED.consolidation_state,
+                last_consolidation_at = EXCLUDED.last_consolidation_at,
+                associations = EXCLUDED.associations,
+                temporal_links = EXCLUDED.temporal_links
         "#)
         .bind(&row.id)
         .bind(&row.content_text)
@@ -172,7 +184,10 @@ impl Storage for PostgresStorage {
         .bind(&row.tags)
         .bind(row.lability)
         .bind(row.consolidation_threshold)
+        .bind(&row.consolidation_state)
+        .bind(row.last_consolidation_at as i64)
         .bind(&row.associations)
+        .bind(&row.temporal_links)
         .execute(&*pool)
         .await
         .map_err(|e| Error::Storage(e.to_string()))?;
@@ -193,7 +208,7 @@ impl Storage for PostgresStorage {
     async fn all(&self) -> Result<Vec<Memory>> {
         let pool = self.pool.read().await;
         let rows: Vec<MemoryRowPg> = sqlx::query_as(
-            "SELECT id, content_text, content_structured, content_raw, embedding, created_at, updated_at, last_accessed_at, access_count, access_timestamps, emotion_valence, emotion_arousal, decay_rate, importance, context, tags, lability, consolidation_threshold, associations FROM memories"
+            "SELECT id, content_text, content_structured, content_raw, embedding, created_at, updated_at, last_accessed_at, access_count, access_timestamps, emotion_valence, emotion_arousal, decay_rate, importance, context, tags, lability, consolidation_threshold, consolidation_state, last_consolidation_at, associations, temporal_links FROM memories"
         )
         .fetch_all(&*pool)
         .await
@@ -251,7 +266,12 @@ impl Storage for PostgresStorage {
                 if m.embedding.len() != embedding.len() {
                     return None;
                 }
-                let dot: f64 = m.embedding.iter().zip(embedding.iter()).map(|(a, b)| a * b).sum();
+                let dot: f64 = m
+                    .embedding
+                    .iter()
+                    .zip(embedding.iter())
+                    .map(|(a, b)| a * b)
+                    .sum();
                 let norm_a: f64 = m.embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
                 let norm_b: f64 = embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
                 if norm_a > 0.0 && norm_b > 0.0 {

@@ -1,7 +1,4 @@
-use hippoe_core::{
-    Hippocampus, InMemoryStorage, MemoryBuilder,
-    LinkKind,
-};
+use hippoe_core::{Hippocampus, InMemoryStorage, LinkKind, MemoryBuilder};
 
 fn generate_embedding(dim: usize, values: &[f64]) -> Vec<f64> {
     let mut embedding = Vec::with_capacity(dim);
@@ -62,15 +59,34 @@ fn main() {
         let async_runtime = memory_ids[4];
 
         let associations = vec![
-            (rust_ownership, memory_safety, 0.9, "Rust ownership", "Memory safety"),
+            (
+                rust_ownership,
+                memory_safety,
+                0.9,
+                "Rust ownership",
+                "Memory safety",
+            ),
             (rust_ownership, wasm, 0.6, "Rust ownership", "WebAssembly"),
-            (memory_safety, async_runtime, 0.5, "Memory safety", "Async runtime"),
+            (
+                memory_safety,
+                async_runtime,
+                0.5,
+                "Memory safety",
+                "Async runtime",
+            ),
             (wasm, api_patterns, 0.7, "WebAssembly", "API patterns"),
-            (async_runtime, api_patterns, 0.8, "Async runtime", "API patterns"),
+            (
+                async_runtime,
+                api_patterns,
+                0.8,
+                "Async runtime",
+                "API patterns",
+            ),
         ];
 
         for (from, to, strength, from_text, to_text) in associations {
-            hippoe.create_association(from, to, strength, LinkKind::Semantic)
+            hippoe
+                .create_association(from, to, strength, LinkKind::Semantic)
                 .await
                 .unwrap();
             println!("  {} --({:.1})--> {}", from_text, strength, to_text);
@@ -81,7 +97,8 @@ fn main() {
 
     rt.block_on(async {
         let query_embedding = generate_embedding(64, &[1.0, 0.0, 0.2, 0.0]);
-        let results = hippoe.query()
+        let results = hippoe
+            .query()
             .similar_to(query_embedding)
             .max_results(5)
             .execute()
@@ -89,7 +106,11 @@ fn main() {
             .unwrap();
 
         for (rank, mem) in results.iter().enumerate() {
-            println!("#{} - {}", rank + 1, mem.content.text.as_deref().unwrap_or("?"));
+            println!(
+                "#{} - {}",
+                rank + 1,
+                mem.content.text.as_deref().unwrap_or("?")
+            );
         }
     });
 
@@ -98,7 +119,8 @@ fn main() {
     rt.block_on(async {
         let query_embedding = generate_embedding(64, &[1.0, 0.0, 0.2, 0.0]);
         let rust_id = memory_ids[0];
-        let results = hippoe.query()
+        let results = hippoe
+            .query()
             .similar_to(query_embedding)
             .max_results(5)
             .include_associations(rust_id, 3)
@@ -108,7 +130,11 @@ fn main() {
 
         println!("Results including associations from 'Rust ownership rules':\n");
         for (rank, mem) in results.iter().enumerate() {
-            println!("#{} - {}", rank + 1, mem.content.text.as_deref().unwrap_or("?"));
+            println!(
+                "#{} - {}",
+                rank + 1,
+                mem.content.text.as_deref().unwrap_or("?")
+            );
         }
     });
 

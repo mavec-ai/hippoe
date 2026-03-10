@@ -1,12 +1,15 @@
 use crate::config::Config;
 use crate::error::Result;
 use crate::memory::{
-    AssociationBuilder, AssociationEdge, AssociationGraph, Memory, TemporalContext,
+    AssociationBuilder, AssociationEdge, AssociationGraph, Memory, TemporalContext, TemporalLink,
     compute_association_strength,
 };
-use crate::recall::{CognitiveRetrieval, RetrievalContext, RetrievalMatch, RetrievalStrategy};
+use crate::recall::{
+    CognitiveRetrieval, RetrievalContext, RetrievalMatch, RetrievalStrategy, WorkingMemoryBoost,
+};
 use crate::storage::Storage;
 use crate::types::{Embedding, Id, LinkKind, now};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 pub struct Hippocampus<S: Storage> {
@@ -15,6 +18,8 @@ pub struct Hippocampus<S: Storage> {
     association_builder: AssociationBuilder,
     retrieval_strategy: Box<dyn RetrievalStrategy>,
     temporal_context: Arc<RwLock<TemporalContext>>,
+    working_memory: WorkingMemoryBoost,
+    session_id: Arc<RwLock<Option<String>>>,
 }
 
 impl<S: Storage> Hippocampus<S> {
@@ -42,6 +47,19 @@ impl<S: Storage> Hippocampus<S> {
             .build_associations(&memory, &existing, &mut graph);
 
         self.storage.update_graph(|g| *g = graph).await?;
+
+        let mut memory = memory;
+
+        if let Some(last_memory) = existing.iter().max_by(|a, b| {
+            a.metadata
+                .created_at
+                .cmp(&b.metadata.created_at)
+                .then_with(|| a.id.0.cmp(&b.id.0))
+        }) {
+            let temporal_link =
+                TemporalLink::new(last_memory.id, memory.id, 1, memory.metadata.created_at);
+            memory.temporal_links.push(temporal_link);
+        }
 
         self.storage.put(memory).await?;
         Ok(id)
@@ -74,7 +92,33 @@ impl<S: Storage> Hippocampus<S> {
         self.storage.update_graph(|g| *g = graph).await?;
 
         let mut ids = Vec::with_capacity(memories.len());
-        for memory in memories {
+        let mut memories_with_links: Vec<Memory> = memories;
+
+        if let Some(last_existing) = existing.iter().max_by(|a, b| {
+            a.metadata
+                .created_at
+                .cmp(&b.metadata.created_at)
+                .then_with(|| a.id.0.cmp(&b.id.0))
+        }) && let Some(first_new) = memories_with_links.first_mut()
+        {
+            let temporal_link = TemporalLink::new(
+                last_existing.id,
+                first_new.id,
+                1,
+                first_new.metadata.created_at,
+            );
+            first_new.temporal_links.push(temporal_link);
+        }
+
+        for i in 1..memories_with_links.len() {
+            let prev_id = memories_with_links[i - 1].id;
+            let current = &mut memories_with_links[i];
+            let temporal_link =
+                TemporalLink::new(prev_id, current.id, 1, current.metadata.created_at);
+            current.temporal_links.push(temporal_link);
+        }
+
+        for memory in memories_with_links {
             let id = memory.id;
             self.storage.put(memory).await?;
             ids.push(id);
@@ -97,15 +141,34 @@ impl<S: Storage> Hippocampus<S> {
             ctx.clone()
         };
 
-        let context = RetrievalContext::new(probe.clone(), now())
+        let session_id = self.session_id.read().unwrap().clone();
+
+        let wm_accesses = if let Some(ref sid) = session_id {
+            self.working_memory.get_session_accesses(sid)
+        } else {
+            HashMap::new()
+        };
+
+        let mut context = RetrievalContext::new(probe.clone(), now())
             .with_min_threshold(self.config.min_score)
             .with_max_results(self.config.max_results)
-            .with_temporal_context(temporal_ctx);
+            .with_temporal_context(temporal_ctx)
+            .with_working_memory_accesses(wm_accesses);
+
+        if let Some(ref sid) = session_id {
+            context = context.with_session_id(sid);
+        }
 
         let matches = self
             .retrieval_strategy
             .retrieve(&memories, &graph, &context)
             .await;
+
+        if let Some(ref sid) = session_id {
+            for m in &matches {
+                self.working_memory.record_access(m.memory_id, sid);
+            }
+        }
 
         self.apply_reconsolidation(&matches, &probe).await?;
 
@@ -120,11 +183,23 @@ impl<S: Storage> Hippocampus<S> {
         let memories = self.storage.all().await?;
         let graph = self.storage.get_graph().await?;
 
-        let context = RetrievalContext::new(probe.clone(), now())
+        let session_id = self.session_id.read().unwrap().clone();
+
+        let mut context = RetrievalContext::new(probe.clone(), now())
             .with_min_threshold(self.config.min_score)
             .with_max_results(self.config.max_results);
 
+        if let Some(ref sid) = session_id {
+            context = context.with_session_id(sid);
+        }
+
         let matches = strategy.retrieve(&memories, &graph, &context).await;
+
+        if let Some(ref sid) = session_id {
+            for m in &matches {
+                self.working_memory.record_access(m.memory_id, sid);
+            }
+        }
 
         self.apply_reconsolidation(&matches, &probe).await?;
 
@@ -190,13 +265,7 @@ impl<S: Storage> Hippocampus<S> {
             .update_graph(|g| {
                 if let Some(edge) = g.get_edge(from, to, kind) {
                     let new_strength = (edge.strength + increment).min(1.0);
-                    let new_edge = AssociationEdge::new(
-                        from,
-                        to,
-                        new_strength,
-                        kind,
-                        now(),
-                    );
+                    let new_edge = AssociationEdge::new(from, to, new_strength, kind, now());
                     g.add_edge(new_edge);
                 }
             })
@@ -218,17 +287,43 @@ impl<S: Storage> Hippocampus<S> {
             .await
     }
 
-    async fn apply_reconsolidation(&self, matches: &[RetrievalMatch], probe: &Embedding) -> Result<()> {
+    pub fn set_session(&self, session_id: impl Into<String>) {
+        let mut session = self.session_id.write().unwrap();
+        *session = Some(session_id.into());
+    }
+
+    pub fn clear_session(&self) {
+        let mut session = self.session_id.write().unwrap();
+        if let Some(sid) = session.take() {
+            self.working_memory.clear_session(&sid);
+        }
+    }
+
+    pub fn get_session(&self) -> Option<String> {
+        self.session_id.read().unwrap().clone()
+    }
+
+    pub fn working_memory(&self) -> &WorkingMemoryBoost {
+        &self.working_memory
+    }
+
+    async fn apply_reconsolidation(
+        &self,
+        matches: &[RetrievalMatch],
+        probe: &Embedding,
+    ) -> Result<()> {
+        let current_time = now();
         for m in matches.iter().take(5) {
             if let Some(mut memory) = self.storage.get(m.memory_id).await? {
-                let surprise = 1.0 - m.scores.similarity;
-                
+                let surprise = 1.0 - m.scores.raw_similarity;
+
                 if memory.metadata.should_reconsolidate(surprise) {
-                    memory.reconsolidate(probe, 0.1);
+                    memory.reconsolidate(probe, 0.1, current_time);
                 }
-                
-                memory.metadata.accessed(now());
+
+                memory.metadata.accessed(current_time);
                 memory.metadata.importance = (memory.metadata.importance * 1.05).min(1.0);
+                memory.metadata.update_consolidation_state(current_time);
                 self.storage.put(memory).await?;
             }
         }
@@ -245,7 +340,9 @@ impl<S: Storage> Hippocampus<S> {
         graph: &AssociationGraph,
         context: &RetrievalContext,
     ) -> Vec<RetrievalMatch> {
-        self.retrieval_strategy.retrieve(memories, graph, context).await
+        self.retrieval_strategy
+            .retrieve(memories, graph, context)
+            .await
     }
 }
 
@@ -355,12 +452,16 @@ impl HippocampusBuilder {
         let embedding_dim = 384;
         let temporal_context = Arc::new(RwLock::new(TemporalContext::new(embedding_dim)));
 
+        let working_memory = WorkingMemoryBoost::default();
+
         Ok(Hippocampus {
             config,
             storage,
             association_builder: assoc_builder,
             retrieval_strategy: Box::new(retrieval_strategy),
             temporal_context,
+            working_memory,
+            session_id: Arc::new(RwLock::new(None)),
         })
     }
 }

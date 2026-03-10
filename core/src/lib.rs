@@ -1,24 +1,26 @@
-pub mod hippocampus;
 pub mod config;
 pub mod embedding;
 pub mod error;
+pub mod hippocampus;
 pub mod memory;
 pub mod recall;
 pub mod storage;
 pub mod types;
 
-pub use hippocampus::{Hippocampus, HippocampusBuilder};
 pub use config::Config;
 pub use embedding::{EmbeddingError, EmbeddingProvider, EmbeddingResult, SharedEmbeddingProvider};
+pub use hippocampus::{Hippocampus, HippocampusBuilder};
 pub use memory::{
     Association, AssociationBuilder, AssociationGraph, Memory, MemoryBuilder, MemoryContent,
     MemoryMetadata, TemporalContext, compute_association_strength,
 };
-pub use recall::{MemoryQuery, MemoryQueryBuilder};
-pub use recall::scorer::{similarity, similarity_batch};
+pub use recall::scorer::{
+    cosine_similarity, cosine_similarity_batch, similarity, similarity_batch,
+};
 pub use recall::strategy::{
     CognitiveRetrieval, RetrievalContext, RetrievalMatch, RetrievalScores, RetrievalStrategy,
 };
+pub use recall::{MemoryQuery, MemoryQueryBuilder};
 pub use storage::{InMemoryStorage, Storage};
 pub use types::{Embedding, Emotion, Id, Link, LinkKind, Timestamp};
 

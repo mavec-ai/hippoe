@@ -132,7 +132,7 @@ impl Storage for InMemoryStorage {
         let memories = self.memories.read().await;
 
         let mut activations = graph.spreading_activation(id, max_depth, 0.5);
-        
+
         for edge in graph.get_edges_to(id) {
             let entry = activations.entry(edge.from).or_insert(0.0);
             *entry = entry.max(edge.strength);
@@ -169,7 +169,7 @@ fn compute_cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
 mod tests {
     use super::*;
     use crate::memory::{AssociationEdge, MemoryBuilder};
-    use crate::types::{now, LinkKind};
+    use crate::types::{LinkKind, now};
 
     fn make_embedding(values: &[f64]) -> Vec<f64> {
         let norm: f64 = values.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -245,7 +245,10 @@ mod tests {
 
         let important = storage.find_by_tag("important").await.unwrap();
         assert_eq!(important.len(), 1);
-        assert_eq!(important[0].content.text, Some("important note".to_string()));
+        assert_eq!(
+            important[0].content.text,
+            Some("important note".to_string())
+        );
     }
 
     #[tokio::test]

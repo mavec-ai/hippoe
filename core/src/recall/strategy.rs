@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 
 use crate::memory::{AssociationGraph, Memory, TemporalContext};
+use crate::recall::scorer::cosine_similarity;
 use crate::types::{Embedding, Id, LinkKind, Timestamp};
 
 #[derive(Debug, Clone)]
@@ -14,6 +16,8 @@ pub struct RetrievalContext {
     pub max_results: usize,
     pub min_threshold: f64,
     pub temporal_context: Option<TemporalContext>,
+    pub session_id: Option<String>,
+    pub working_memory_accesses: HashMap<Id, usize>,
 }
 
 impl RetrievalContext {
@@ -26,6 +30,8 @@ impl RetrievalContext {
             max_results: 100,
             min_threshold: 0.0,
             temporal_context: None,
+            session_id: None,
+            working_memory_accesses: HashMap::new(),
         }
     }
 
@@ -53,6 +59,16 @@ impl RetrievalContext {
         self.temporal_context = Some(ctx);
         self
     }
+
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    pub fn with_working_memory_accesses(mut self, accesses: HashMap<Id, usize>) -> Self {
+        self.working_memory_accesses = accesses;
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -65,11 +81,14 @@ pub struct RetrievalMatch {
 #[derive(Debug, Clone, Default)]
 pub struct RetrievalScores {
     pub similarity: f64,
+    pub raw_similarity: f64,
     pub base_level: f64,
     pub spreading: f64,
     pub emotional: f64,
     pub contextual: f64,
     pub temporal: f64,
+    pub working_memory_boost: f64,
+    pub instance_noise: f64,
     pub total: f64,
 }
 
@@ -83,6 +102,151 @@ pub trait RetrievalStrategy: Send + Sync {
     ) -> Vec<RetrievalMatch>;
 }
 
+#[derive(Debug, Clone)]
+pub struct WorkingMemoryConfig {
+    pub boost_factor: f64,
+    pub decay_rate: f64,
+    pub max_boost: f64,
+    pub session_ttl_ms: u64,
+    pub max_sessions: usize,
+}
+
+impl Default for WorkingMemoryConfig {
+    fn default() -> Self {
+        Self {
+            boost_factor: 1.5,
+            decay_rate: 0.15,
+            max_boost: 2.0,
+            session_ttl_ms: 3_600_000,
+            max_sessions: 100,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SessionMetadata {
+    last_access: std::time::Instant,
+    accesses: HashMap<Id, usize>,
+}
+
+#[derive(Debug, Default)]
+pub struct WorkingMemoryBoost {
+    sessions: Arc<RwLock<HashMap<String, SessionMetadata>>>,
+    config: WorkingMemoryConfig,
+}
+
+impl WorkingMemoryBoost {
+    pub fn new(config: WorkingMemoryConfig) -> Self {
+        Self {
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            config,
+        }
+    }
+
+    pub fn record_access(&self, memory_id: Id, session_id: &str) {
+        let mut sessions = self.sessions.write().unwrap();
+        let session = sessions
+            .entry(session_id.to_string())
+            .or_insert(SessionMetadata {
+                last_access: std::time::Instant::now(),
+                accesses: HashMap::new(),
+            });
+        session.last_access = std::time::Instant::now();
+        *session.accesses.entry(memory_id).or_insert(0) += 1;
+
+        if sessions.len() > self.config.max_sessions {
+            self.evict_oldest_session(&mut sessions);
+        }
+    }
+
+    pub fn compute_boost(&self, memory_id: Id, session_id: Option<&str>) -> f64 {
+        let sessions = self.sessions.read().unwrap();
+
+        let Some(session_id) = session_id else {
+            return 0.0;
+        };
+
+        let Some(session) = sessions.get(session_id) else {
+            return 0.0;
+        };
+
+        let Some(&count) = session.accesses.get(&memory_id) else {
+            return 0.0;
+        };
+
+        let raw_boost = (count as f64).ln().max(0.0) * 0.8;
+        (1.0 + raw_boost).min(self.config.max_boost)
+    }
+
+    pub fn get_session_accesses(&self, session_id: &str) -> HashMap<Id, usize> {
+        let sessions = self.sessions.read().unwrap();
+        sessions
+            .get(session_id)
+            .map(|s| s.accesses.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn get_access_count(&self, memory_id: Id, session_id: &str) -> usize {
+        let sessions = self.sessions.read().unwrap();
+        sessions
+            .get(session_id)
+            .and_then(|s| s.accesses.get(&memory_id).copied())
+            .unwrap_or(0)
+    }
+
+    pub fn decay_session(&self, session_id: &str) {
+        let mut sessions = self.sessions.write().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            for count in session.accesses.values_mut() {
+                *count = (*count as f64 * (1.0 - self.config.decay_rate)) as usize;
+            }
+            session.accesses.retain(|_, c| *c > 0);
+        }
+    }
+
+    pub fn clear_session(&self, session_id: &str) {
+        let mut sessions = self.sessions.write().unwrap();
+        sessions.remove(session_id);
+    }
+
+    pub fn cleanup_expired_sessions(&self) {
+        let mut sessions = self.sessions.write().unwrap();
+        let ttl = std::time::Duration::from_millis(self.config.session_ttl_ms);
+        sessions.retain(|_, session| session.last_access.elapsed() < ttl);
+    }
+
+    fn evict_oldest_session(&self, sessions: &mut HashMap<String, SessionMetadata>) {
+        if let Some((oldest_id, _)) = sessions.iter().min_by_key(|(_, s)| s.last_access) {
+            let oldest_id = oldest_id.clone();
+            sessions.remove(&oldest_id);
+        }
+    }
+}
+
+impl Clone for WorkingMemoryBoost {
+    fn clone(&self) -> Self {
+        Self {
+            sessions: Arc::new(RwLock::new(self.sessions.read().unwrap().clone())),
+            config: self.config.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct InstanceNoiseConfig {
+    pub base_noise: f64,
+    pub encoding_strength_factor: f64,
+}
+
+impl Default for InstanceNoiseConfig {
+    fn default() -> Self {
+        Self {
+            base_noise: 0.1,
+            encoding_strength_factor: 0.2,
+        }
+    }
+}
+
 pub struct CognitiveRetrieval {
     similarity_weight: f64,
     base_level_weight: f64,
@@ -90,11 +254,15 @@ pub struct CognitiveRetrieval {
     emotional_weight: f64,
     contextual_weight: f64,
     temporal_weight: f64,
+    working_memory_weight: f64,
     spreading_depth: usize,
     spreading_decay: f64,
     semantic_link_weight: f64,
     episodic_link_weight: f64,
     temporal_link_weight: f64,
+    bidirectional_spreading: bool,
+    working_memory: WorkingMemoryBoost,
+    instance_noise_config: InstanceNoiseConfig,
 }
 
 impl CognitiveRetrieval {
@@ -106,11 +274,15 @@ impl CognitiveRetrieval {
             emotional_weight: 0.5,
             contextual_weight: 0.3,
             temporal_weight: 0.3,
+            working_memory_weight: 0.6,
             spreading_depth: 3,
             spreading_decay: 0.5,
             semantic_link_weight: 1.0,
             episodic_link_weight: 0.7,
             temporal_link_weight: 0.4,
+            bidirectional_spreading: false,
+            working_memory: WorkingMemoryBoost::default(),
+            instance_noise_config: InstanceNoiseConfig::default(),
         }
     }
 
@@ -155,25 +327,55 @@ impl CognitiveRetrieval {
         self
     }
 
-    fn compute_similarity(&self, query: &[f64], memory: &[f64]) -> f64 {
-        if query.len() != memory.len() {
-            return 0.0;
-        }
-
-        let dot_product: f64 = query.iter().zip(memory.iter()).map(|(a, b)| a * b).sum();
-        let query_norm: f64 = query.iter().map(|x| x * x).sum::<f64>().sqrt();
-        let memory_norm: f64 = memory.iter().map(|x| x * x).sum::<f64>().sqrt();
-
-        if query_norm > 0.0 && memory_norm > 0.0 {
-            (dot_product / (query_norm * memory_norm)).max(0.0)
-        } else {
-            0.0
-        }
+    pub fn with_working_memory(mut self, weight: f64, config: WorkingMemoryConfig) -> Self {
+        self.working_memory_weight = weight;
+        self.working_memory = WorkingMemoryBoost::new(config);
+        self
     }
 
-    fn compute_similarity_activation(&self, similarity: f64, emotional_weight: f64) -> f64 {
-        let k = 5.0 + 3.0 * emotional_weight;
-        1.0 / (1.0 + (-k * (similarity - 0.5)).exp())
+    pub fn with_bidirectional_spreading(mut self, enabled: bool) -> Self {
+        self.bidirectional_spreading = enabled;
+        self
+    }
+
+    pub fn with_instance_noise(mut self, config: InstanceNoiseConfig) -> Self {
+        self.instance_noise_config = config;
+        self
+    }
+
+    pub fn working_memory(&self) -> &WorkingMemoryBoost {
+        &self.working_memory
+    }
+
+    pub fn working_memory_mut(&mut self) -> &mut WorkingMemoryBoost {
+        &mut self.working_memory
+    }
+
+    fn compute_wm_boost(
+        &self,
+        memory_id: Id,
+        accesses: &HashMap<Id, usize>,
+        session_id: Option<&str>,
+    ) -> f64 {
+        let Some(session_id) = session_id else {
+            return 1.0;
+        };
+
+        let count = accesses
+            .get(&memory_id)
+            .copied()
+            .unwrap_or_else(|| self.working_memory.get_access_count(memory_id, session_id));
+
+        if count == 0 {
+            return 1.0;
+        }
+
+        let raw_boost = (count as f64).ln().max(0.0) * 0.8;
+        (1.0 + raw_boost).min(self.working_memory.config.max_boost)
+    }
+
+    fn compute_minerva2_activation(&self, similarity: f64) -> f64 {
+        similarity.powi(3)
     }
 
     fn compute_base_level(&self, memory: &Memory, current_time: Timestamp) -> f64 {
@@ -186,34 +388,93 @@ impl CognitiveRetrieval {
         graph: &AssociationGraph,
         all_memories: &[Memory],
         context: &RetrievalContext,
+        id_to_idx: &HashMap<Id, usize>,
     ) -> f64 {
         let mut total_spreading = 0.0;
 
-        let id_to_idx: HashMap<Id, usize> = all_memories
-            .iter()
-            .enumerate()
-            .map(|(i, m)| (m.id, i))
-            .collect();
+        let mut visited = std::collections::HashSet::new();
+        let mut current_frontier = vec![memory.id];
+        visited.insert(memory.id);
 
-        let incoming_edges = graph.get_edges_to(memory.id);
-        
-        for edge in incoming_edges {
-            if let Some(&idx) = id_to_idx.get(&edge.from) {
-                let source = &all_memories[idx];
-                let source_outgoing_count = graph.get_edges_from(source.id).len().max(1) as f64;
-                let fan_normalization = source_outgoing_count.sqrt();
-                
-                let link_weight = match edge.kind {
-                    LinkKind::Semantic => self.semantic_link_weight,
-                    LinkKind::Episodic => self.episodic_link_weight,
-                    LinkKind::Temporal => self.temporal_link_weight,
-                    LinkKind::Causal => 0.8,
-                };
-                
-                let similarity = self.compute_similarity(&context.query_embedding, &source.embedding);
-                let activation = self.compute_similarity_activation(similarity, source.metadata.emotional_weight.weight());
-                total_spreading += activation * edge.strength * link_weight * self.spreading_decay / fan_normalization;
+        let _debug = context.query_embedding.len() == 3
+            && (context.query_embedding[0] - 1.0).abs() < 0.01
+            && context.query_embedding[1].abs() < 0.01
+            && context.query_embedding[2].abs() < 0.01;
+
+        for depth in 0..self.spreading_depth {
+            if current_frontier.is_empty() {
+                break;
             }
+
+            let depth_decay = self.spreading_decay.powi(depth as i32);
+            let mut next_frontier = Vec::new();
+
+            for &node_id in &current_frontier {
+                let incoming_edges = graph.get_edges_to(node_id);
+                for edge in &incoming_edges {
+                    if visited.contains(&edge.from) {
+                        continue;
+                    }
+
+                    if let Some(&idx) = id_to_idx.get(&edge.from) {
+                        let source = &all_memories[idx];
+                        let source_fan = graph.get_edges_from(source.id).len().max(1) as f64;
+                        let fan_normalization = source_fan.sqrt();
+
+                        let link_weight = match edge.kind {
+                            LinkKind::Semantic => self.semantic_link_weight,
+                            LinkKind::Episodic => self.episodic_link_weight,
+                            LinkKind::Temporal => self.temporal_link_weight,
+                            LinkKind::Causal => 0.8,
+                        };
+
+                        let similarity =
+                            cosine_similarity(&context.query_embedding, &source.embedding);
+                        let activation = self.compute_minerva2_activation(similarity);
+                        let contribution = activation * edge.strength * link_weight * depth_decay
+                            / fan_normalization;
+                        total_spreading += contribution;
+
+                        visited.insert(edge.from);
+                        next_frontier.push(edge.from);
+                    }
+                }
+
+                if self.bidirectional_spreading {
+                    let outgoing_edges = graph.get_edges_from(node_id);
+                    for edge in &outgoing_edges {
+                        if visited.contains(&edge.to) {
+                            continue;
+                        }
+
+                        if let Some(&idx) = id_to_idx.get(&edge.to) {
+                            let target = &all_memories[idx];
+                            let target_fan = graph.get_edges_from(target.id).len().max(1) as f64;
+                            let fan_normalization = (target_fan + 1.0).ln().max(1.0);
+
+                            let link_weight = match edge.kind {
+                                LinkKind::Semantic => self.semantic_link_weight * 0.7,
+                                LinkKind::Episodic => self.episodic_link_weight * 0.7,
+                                LinkKind::Temporal => self.temporal_link_weight * 0.7,
+                                LinkKind::Causal => 0.6,
+                            };
+
+                            let similarity =
+                                cosine_similarity(&context.query_embedding, &target.embedding);
+                            let activation = self.compute_minerva2_activation(similarity);
+                            total_spreading +=
+                                activation * edge.strength * link_weight * depth_decay
+                                    / fan_normalization;
+
+                            visited.insert(edge.to);
+                            next_frontier.push(edge.to);
+                        }
+                    }
+                }
+            }
+
+            current_frontier = next_frontier;
+            current_frontier.sort_by(|a, b| a.0.cmp(&b.0));
         }
 
         total_spreading
@@ -261,18 +522,68 @@ impl CognitiveRetrieval {
         score
     }
 
-    fn compute_temporal(&self, memory: &Memory, current_time: Timestamp, context: &RetrievalContext) -> f64 {
+    fn compute_temporal(
+        &self,
+        memory: &Memory,
+        current_time: Timestamp,
+        context: &RetrievalContext,
+        memory_similarities: &std::collections::HashMap<Id, f64>,
+    ) -> f64 {
+        let mut temporal_score = 0.0;
+
         if let Some(ref temporal_ctx) = context.temporal_context {
             let tcm_similarity = temporal_ctx.similarity_to_embedding(&memory.embedding);
-            
+
             let time_since_created = current_time.saturating_sub(memory.metadata.created_at) as f64;
             let recency_factor = (-memory.metadata.decay_rate * time_since_created / 1000.0).exp();
-            
-            tcm_similarity * 0.6 + recency_factor * 0.4
-        } else {
-            let time_since_access = current_time.saturating_sub(memory.metadata.last_accessed_at) as f64;
-            (-memory.metadata.decay_rate * time_since_access / 1000.0).exp()
+
+            temporal_score = tcm_similarity * 0.6 + recency_factor * 0.4;
+
+            for link in &memory.temporal_links {
+                let source_similarity = memory_similarities
+                    .get(&link.source_id)
+                    .copied()
+                    .unwrap_or(0.0);
+
+                if source_similarity < 0.3 {
+                    continue;
+                }
+
+                temporal_score += link.forward_strength * source_similarity * 0.15;
+            }
         }
+
+        if temporal_score == 0.0 {
+            let time_since_access =
+                current_time.saturating_sub(memory.metadata.last_accessed_at) as f64;
+            temporal_score = (-memory.metadata.decay_rate * time_since_access / 1000.0).exp();
+        }
+
+        let session_decay = memory.metadata.compute_session_decay_rate(current_time);
+        temporal_score * (1.0 - session_decay * 0.3)
+    }
+
+    fn compute_instance_noise(&self, memory: &Memory) -> f64 {
+        let encoding_strength = memory.metadata.importance;
+
+        self.instance_noise_config.base_noise
+            + self.instance_noise_config.encoding_strength_factor * (1.0 - encoding_strength)
+    }
+
+    fn compute_total_score(&self, scores: &RetrievalScores) -> f64 {
+        let normalized_spreading = scores.spreading.tanh();
+        let normalized_base_level = 1.0 / (1.0 + (-scores.base_level).exp());
+
+        let base_total = (scores.similarity * self.similarity_weight)
+            + (normalized_base_level * self.base_level_weight)
+            + (normalized_spreading * self.spreading_weight)
+            + (scores.emotional * self.emotional_weight)
+            + (scores.contextual * self.contextual_weight)
+            + (scores.temporal * self.temporal_weight);
+
+        let noise_adjusted = base_total + scores.instance_noise;
+
+        noise_adjusted.max(0.0)
     }
 }
 
@@ -290,35 +601,66 @@ impl RetrievalStrategy for CognitiveRetrieval {
         graph: &AssociationGraph,
         context: &RetrievalContext,
     ) -> Vec<RetrievalMatch> {
+        use std::collections::HashMap;
+
+        let embeddings: Vec<&[f64]> = memories.iter().map(|m| m.embedding.as_slice()).collect();
+        let raw_similarities =
+            crate::recall::cosine_similarity_batch(&context.query_embedding, &embeddings);
+
+        let memory_similarities: HashMap<Id, f64> = memories
+            .iter()
+            .enumerate()
+            .map(|(i, memory)| (memory.id, raw_similarities[i]))
+            .collect();
+
+        let id_to_idx: HashMap<Id, usize> = memories
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.id, i))
+            .collect();
+
         let mut matches: Vec<RetrievalMatch> = memories
             .iter()
             .map(|memory| {
-                let raw_similarity = self.compute_similarity(&context.query_embedding, &memory.embedding);
-                let similarity = self.compute_similarity_activation(raw_similarity, memory.metadata.emotional_weight.weight());
+                let raw_similarity = memory_similarities[&memory.id];
+                let working_memory_boost = self.compute_wm_boost(
+                    memory.id,
+                    &context.working_memory_accesses,
+                    context.session_id.as_deref(),
+                );
+                let adjusted_similarity = (raw_similarity * working_memory_boost).min(1.0);
+                let similarity = self.compute_minerva2_activation(adjusted_similarity);
                 let base_level = self.compute_base_level(memory, context.current_time);
-                let spreading = self.compute_spreading(memory, graph, memories, context);
+                let spreading =
+                    self.compute_spreading(memory, graph, memories, context, &id_to_idx);
                 let emotional = self.compute_emotional(memory);
                 let contextual = self.compute_contextual(memory, context);
-                let temporal = self.compute_temporal(memory, context.current_time, context);
+                let temporal = self.compute_temporal(
+                    memory,
+                    context.current_time,
+                    context,
+                    &memory_similarities,
+                );
+                let instance_noise = self.compute_instance_noise(memory);
 
-                let total = (similarity * self.similarity_weight)
-                    + (base_level * self.base_level_weight)
-                    + (spreading * self.spreading_weight)
-                    + (emotional * self.emotional_weight)
-                    + (contextual * self.contextual_weight)
-                    + (temporal * self.temporal_weight);
+                let scores = RetrievalScores {
+                    similarity,
+                    raw_similarity,
+                    base_level,
+                    spreading,
+                    emotional,
+                    contextual,
+                    temporal,
+                    working_memory_boost,
+                    instance_noise,
+                    total: 0.0,
+                };
+
+                let total = self.compute_total_score(&scores);
 
                 RetrievalMatch {
                     memory_id: memory.id,
-                    scores: RetrievalScores {
-                        similarity,
-                        base_level,
-                        spreading,
-                        emotional,
-                        contextual,
-                        temporal,
-                        total,
-                    },
+                    scores: RetrievalScores { total, ..scores },
                     probability: 0.0,
                 }
             })
@@ -328,6 +670,7 @@ impl RetrievalStrategy for CognitiveRetrieval {
             b.score()
                 .partial_cmp(&a.score())
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.memory_id.0.cmp(&b.memory_id.0))
         });
 
         if matches.len() > context.max_results {
@@ -336,7 +679,12 @@ impl RetrievalStrategy for CognitiveRetrieval {
 
         matches.retain(|m| m.score() >= context.min_threshold);
 
-        let exp_scores: Vec<f64> = matches.iter().map(|m| m.score().exp()).collect();
+        let temperature = 0.1;
+        let max_score = matches.iter().map(|m| m.score()).fold(0.0, f64::max);
+        let exp_scores: Vec<f64> = matches
+            .iter()
+            .map(|m| ((m.score() - max_score) / temperature).exp())
+            .collect();
         let prob_total: f64 = exp_scores.iter().sum();
 
         for (m, exp_score) in matches.iter_mut().zip(exp_scores.iter()) {
@@ -356,7 +704,7 @@ impl RetrievalMatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{MemoryBuilder, AssociationEdge};
+    use crate::memory::{AssociationEdge, MemoryBuilder};
     use crate::types::now;
 
     fn make_embedding(values: &[f64]) -> Embedding {
@@ -463,10 +811,10 @@ mod tests {
     #[test]
     fn test_base_level_activation_access_boost() {
         let now_time = now();
-        
+
         let mut metadata1 = crate::memory::MemoryMetadata::new(now_time);
         metadata1.accessed(now_time);
-        
+
         let mut metadata2 = crate::memory::MemoryMetadata::new(now_time);
         for _ in 0..10 {
             metadata2.accessed(now_time);
@@ -500,12 +848,34 @@ mod tests {
             .text("peripheral 2")
             .build();
 
-        let memories = vec![central_mem.clone(), peripheral1.clone(), peripheral2.clone()];
+        let memories = vec![
+            central_mem.clone(),
+            peripheral1.clone(),
+            peripheral2.clone(),
+        ];
         let mut graph = AssociationGraph::new();
 
-        graph.add_edge(AssociationEdge::new(central_mem.id, peripheral1.id, 0.8, crate::types::LinkKind::Semantic, current_time));
-        graph.add_edge(AssociationEdge::new(central_mem.id, peripheral2.id, 0.8, crate::types::LinkKind::Semantic, current_time));
-        graph.add_edge(AssociationEdge::new(peripheral1.id, peripheral2.id, 0.5, crate::types::LinkKind::Semantic, current_time));
+        graph.add_edge(AssociationEdge::new(
+            central_mem.id,
+            peripheral1.id,
+            0.8,
+            crate::types::LinkKind::Semantic,
+            current_time,
+        ));
+        graph.add_edge(AssociationEdge::new(
+            central_mem.id,
+            peripheral2.id,
+            0.8,
+            crate::types::LinkKind::Semantic,
+            current_time,
+        ));
+        graph.add_edge(AssociationEdge::new(
+            peripheral1.id,
+            peripheral2.id,
+            0.5,
+            crate::types::LinkKind::Semantic,
+            current_time,
+        ));
 
         let context = RetrievalContext::new(make_embedding(&[1.0, 0.0, 0.0]), current_time);
 
@@ -530,7 +900,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_similarity_sigmoid_bounded() {
+    async fn test_minerva2_activation_bounded() {
         let strategy = CognitiveRetrieval::new();
         let current_time = now();
 
@@ -566,6 +936,133 @@ mod tests {
                 "high similarity memory should score higher: {} > {}",
                 high.scores.similarity,
                 low.scores.similarity
+            );
+        }
+    }
+
+    #[test]
+    fn test_working_memory_boost() {
+        let wm = WorkingMemoryBoost::default();
+        let mem_id = Id::new();
+        let session = "test-session";
+
+        assert_eq!(wm.compute_boost(mem_id, Some(session)), 0.0);
+
+        wm.record_access(mem_id, session);
+        wm.record_access(mem_id, session);
+        let boost1 = wm.compute_boost(mem_id, Some(session));
+        assert!(
+            boost1 >= 1.0,
+            "multiple accesses should give boost >= 1.0, got {}",
+            boost1
+        );
+
+        wm.record_access(mem_id, session);
+        wm.record_access(mem_id, session);
+        let boost2 = wm.compute_boost(mem_id, Some(session));
+        assert!(
+            boost2 > boost1,
+            "more accesses should increase boost: {} > {}",
+            boost2,
+            boost1
+        );
+
+        assert_eq!(wm.compute_boost(mem_id, None), 0.0);
+        assert_eq!(wm.compute_boost(mem_id, Some("other-session")), 0.0);
+    }
+
+    #[test]
+    fn test_instance_noise() {
+        let strategy = CognitiveRetrieval::new();
+        let current_time = now();
+
+        let mem_high_importance =
+            MemoryBuilder::new(make_embedding(&[1.0, 0.0, 0.0]), current_time)
+                .importance(0.9)
+                .build();
+
+        let mem_low_importance = MemoryBuilder::new(make_embedding(&[1.0, 0.0, 0.0]), current_time)
+            .importance(0.1)
+            .build();
+
+        let noise_high = strategy.compute_instance_noise(&mem_high_importance);
+        let noise_low = strategy.compute_instance_noise(&mem_low_importance);
+
+        assert!(
+            noise_high < noise_low,
+            "high importance should have lower noise: {} < {}",
+            noise_high,
+            noise_low
+        );
+        assert!(noise_high >= 0.0);
+        assert!(noise_low >= 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_bidirectional_spreading() {
+        let strategy = CognitiveRetrieval::new().with_bidirectional_spreading(true);
+        let current_time = now();
+
+        let mem_a = MemoryBuilder::new(make_embedding(&[1.0, 0.0, 0.0]), current_time).build();
+        let mem_b = MemoryBuilder::new(make_embedding(&[0.9, 0.1, 0.0]), current_time).build();
+
+        let memories = vec![mem_a.clone(), mem_b.clone()];
+        let mut graph = AssociationGraph::new();
+        graph.add_edge(AssociationEdge::new(
+            mem_a.id,
+            mem_b.id,
+            0.9,
+            LinkKind::Semantic,
+            current_time,
+        ));
+
+        let context = RetrievalContext::new(make_embedding(&[1.0, 0.0, 0.0]), current_time);
+
+        let results = strategy.retrieve(&memories, &graph, &context).await;
+
+        let mem_b_result = results.iter().find(|r| r.memory_id == mem_b.id);
+        assert!(mem_b_result.is_some());
+
+        if let Some(result) = mem_b_result {
+            assert!(
+                result.scores.spreading > 0.0,
+                "bidirectional should give spreading to mem_b"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_session_working_memory_integration() {
+        let strategy = CognitiveRetrieval::new();
+        let current_time = now();
+
+        let mem1 = MemoryBuilder::new(make_embedding(&[1.0, 0.0, 0.0]), current_time)
+            .text("test memory")
+            .build();
+        let mem2 = MemoryBuilder::new(make_embedding(&[0.0, 1.0, 0.0]), current_time)
+            .text("other memory")
+            .build();
+
+        let memories = vec![mem1.clone(), mem2.clone()];
+        let graph = AssociationGraph::new();
+        let session_id = "test-session";
+
+        strategy.working_memory().record_access(mem1.id, session_id);
+        strategy.working_memory().record_access(mem1.id, session_id);
+        strategy.working_memory().record_access(mem1.id, session_id);
+
+        let context = RetrievalContext::new(make_embedding(&[0.7, 0.3, 0.0]), current_time)
+            .with_session_id(session_id);
+
+        let results = strategy.retrieve(&memories, &graph, &context).await;
+
+        let mem1_result = results.iter().find(|r| r.memory_id == mem1.id);
+        let mem2_result = results.iter().find(|r| r.memory_id == mem2.id);
+
+        if let (Some(r1), Some(r2)) = (mem1_result, mem2_result) {
+            assert!(
+                r1.scores.working_memory_boost > r2.scores.working_memory_boost,
+                "frequently accessed memory should have higher WM boost"
             );
         }
     }
