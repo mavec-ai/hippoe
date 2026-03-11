@@ -67,6 +67,7 @@ pub struct AssociationData {
     pub kind: String,
     pub created_at: u64,
     pub last_activated: u64,
+    pub last_decayed_at: u64,
     pub activation_count: u64,
 }
 
@@ -134,6 +135,7 @@ pub fn memory_to_row(memory: &Memory) -> Result<MemoryRow> {
                 kind: link_kind_to_string(a.kind),
                 created_at: a.created_at,
                 last_activated: a.last_activated,
+                last_decayed_at: a.last_decayed_at,
                 activation_count: a.activation_count,
             })
             .collect::<Vec<_>>(),
@@ -207,6 +209,7 @@ pub fn row_to_memory(row: MemoryRow) -> Result<Memory> {
                 kind: string_to_link_kind(&a.kind),
                 created_at: a.created_at,
                 last_activated: a.last_activated,
+                last_decayed_at: a.last_decayed_at,
                 activation_count: a.activation_count,
             })
         })
@@ -295,6 +298,7 @@ pub fn memory_to_data(memory: &Memory) -> MemoryData {
                 kind: link_kind_to_string(a.kind),
                 created_at: a.created_at,
                 last_activated: a.last_activated,
+                last_decayed_at: a.last_decayed_at,
                 activation_count: a.activation_count,
             })
             .collect(),
@@ -329,6 +333,7 @@ pub fn data_to_memory(data: MemoryData) -> Result<Memory> {
                 kind: string_to_link_kind(&a.kind),
                 created_at: a.created_at,
                 last_activated: a.last_activated,
+                last_decayed_at: a.last_decayed_at,
                 activation_count: a.activation_count,
             })
         })

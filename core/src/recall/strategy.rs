@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 
 use crate::memory::{AssociationGraph, Memory, TemporalContext};
-use crate::recall::scorer::cosine_similarity;
+use crate::recall::scorer::combine_activations_multiplicative;
 use crate::types::{Embedding, Id, LinkKind, Timestamp};
 
 #[derive(Debug, Clone)]
@@ -88,7 +88,6 @@ pub struct RetrievalScores {
     pub contextual: f64,
     pub temporal: f64,
     pub working_memory_boost: f64,
-    pub instance_noise: f64,
     pub total: f64,
 }
 
@@ -232,21 +231,6 @@ impl Clone for WorkingMemoryBoost {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct InstanceNoiseConfig {
-    pub base_noise: f64,
-    pub encoding_strength_factor: f64,
-}
-
-impl Default for InstanceNoiseConfig {
-    fn default() -> Self {
-        Self {
-            base_noise: 0.1,
-            encoding_strength_factor: 0.2,
-        }
-    }
-}
-
 pub struct CognitiveRetrieval {
     similarity_weight: f64,
     base_level_weight: f64,
@@ -262,7 +246,6 @@ pub struct CognitiveRetrieval {
     temporal_link_weight: f64,
     bidirectional_spreading: bool,
     working_memory: WorkingMemoryBoost,
-    instance_noise_config: InstanceNoiseConfig,
 }
 
 impl CognitiveRetrieval {
@@ -282,7 +265,6 @@ impl CognitiveRetrieval {
             temporal_link_weight: 0.4,
             bidirectional_spreading: false,
             working_memory: WorkingMemoryBoost::default(),
-            instance_noise_config: InstanceNoiseConfig::default(),
         }
     }
 
@@ -338,11 +320,6 @@ impl CognitiveRetrieval {
         self
     }
 
-    pub fn with_instance_noise(mut self, config: InstanceNoiseConfig) -> Self {
-        self.instance_noise_config = config;
-        self
-    }
-
     pub fn working_memory(&self) -> &WorkingMemoryBoost {
         &self.working_memory
     }
@@ -387,7 +364,7 @@ impl CognitiveRetrieval {
         memory: &Memory,
         graph: &AssociationGraph,
         all_memories: &[Memory],
-        context: &RetrievalContext,
+        raw_similarities: &[f64],
         id_to_idx: &HashMap<Id, usize>,
     ) -> f64 {
         let mut total_spreading = 0.0;
@@ -395,11 +372,6 @@ impl CognitiveRetrieval {
         let mut visited = std::collections::HashSet::new();
         let mut current_frontier = vec![memory.id];
         visited.insert(memory.id);
-
-        let _debug = context.query_embedding.len() == 3
-            && (context.query_embedding[0] - 1.0).abs() < 0.01
-            && context.query_embedding[1].abs() < 0.01
-            && context.query_embedding[2].abs() < 0.01;
 
         for depth in 0..self.spreading_depth {
             if current_frontier.is_empty() {
@@ -428,8 +400,7 @@ impl CognitiveRetrieval {
                             LinkKind::Causal => 0.8,
                         };
 
-                        let similarity =
-                            cosine_similarity(&context.query_embedding, &source.embedding);
+                        let similarity = raw_similarities[idx];
                         let activation = self.compute_minerva2_activation(similarity);
                         let contribution = activation * edge.strength * link_weight * depth_decay
                             / fan_normalization;
@@ -459,8 +430,7 @@ impl CognitiveRetrieval {
                                 LinkKind::Causal => 0.6,
                             };
 
-                            let similarity =
-                                cosine_similarity(&context.query_embedding, &target.embedding);
+                            let similarity = raw_similarities[idx];
                             let activation = self.compute_minerva2_activation(similarity);
                             total_spreading +=
                                 activation * edge.strength * link_weight * depth_decay
@@ -527,7 +497,8 @@ impl CognitiveRetrieval {
         memory: &Memory,
         current_time: Timestamp,
         context: &RetrievalContext,
-        memory_similarities: &std::collections::HashMap<Id, f64>,
+        raw_similarities: &[f64],
+        id_to_idx: &std::collections::HashMap<Id, usize>,
     ) -> f64 {
         let mut temporal_score = 0.0;
 
@@ -540,9 +511,9 @@ impl CognitiveRetrieval {
             temporal_score = tcm_similarity * 0.6 + recency_factor * 0.4;
 
             for link in &memory.temporal_links {
-                let source_similarity = memory_similarities
+                let source_similarity = id_to_idx
                     .get(&link.source_id)
-                    .copied()
+                    .and_then(|&idx| raw_similarities.get(idx).copied())
                     .unwrap_or(0.0);
 
                 if source_similarity < 0.3 {
@@ -563,27 +534,24 @@ impl CognitiveRetrieval {
         temporal_score * (1.0 - session_decay * 0.3)
     }
 
-    fn compute_instance_noise(&self, memory: &Memory) -> f64 {
-        let encoding_strength = memory.metadata.importance;
-
-        self.instance_noise_config.base_noise
-            + self.instance_noise_config.encoding_strength_factor * (1.0 - encoding_strength)
-    }
-
     fn compute_total_score(&self, scores: &RetrievalScores) -> f64 {
         let normalized_spreading = scores.spreading.tanh();
-        let normalized_base_level = 1.0 / (1.0 + (-scores.base_level).exp());
+        let normalized_contextual = scores.contextual.clamp(0.0, 1.0);
+        let normalized_temporal = scores.temporal.clamp(0.0, 1.0);
 
-        let base_total = (scores.similarity * self.similarity_weight)
-            + (normalized_base_level * self.base_level_weight)
-            + (normalized_spreading * self.spreading_weight)
-            + (scores.emotional * self.emotional_weight)
-            + (scores.contextual * self.contextual_weight)
-            + (scores.temporal * self.temporal_weight);
+        let multiplicative_base = combine_activations_multiplicative(
+            scores.similarity,
+            scores.base_level,
+            normalized_spreading * self.spreading_weight,
+            scores.emotional,
+        );
 
-        let noise_adjusted = base_total + scores.instance_noise;
+        let context_boost = 1.0 + (normalized_contextual * self.contextual_weight * 0.5);
+        let temporal_boost = 1.0 + (normalized_temporal * self.temporal_weight * 0.3);
 
-        noise_adjusted.max(0.0)
+        let total = multiplicative_base * context_boost * temporal_boost;
+
+        total.max(0.0)
     }
 }
 
@@ -603,15 +571,13 @@ impl RetrievalStrategy for CognitiveRetrieval {
     ) -> Vec<RetrievalMatch> {
         use std::collections::HashMap;
 
+        if memories.is_empty() {
+            return Vec::new();
+        }
+
         let embeddings: Vec<&[f64]> = memories.iter().map(|m| m.embedding.as_slice()).collect();
         let raw_similarities =
             crate::recall::cosine_similarity_batch(&context.query_embedding, &embeddings);
-
-        let memory_similarities: HashMap<Id, f64> = memories
-            .iter()
-            .enumerate()
-            .map(|(i, memory)| (memory.id, raw_similarities[i]))
-            .collect();
 
         let id_to_idx: HashMap<Id, usize> = memories
             .iter()
@@ -621,8 +587,9 @@ impl RetrievalStrategy for CognitiveRetrieval {
 
         let mut matches: Vec<RetrievalMatch> = memories
             .iter()
-            .map(|memory| {
-                let raw_similarity = memory_similarities[&memory.id];
+            .enumerate()
+            .map(|(idx, memory)| {
+                let raw_similarity = raw_similarities[idx];
                 let working_memory_boost = self.compute_wm_boost(
                     memory.id,
                     &context.working_memory_accesses,
@@ -632,17 +599,16 @@ impl RetrievalStrategy for CognitiveRetrieval {
                 let similarity = self.compute_minerva2_activation(adjusted_similarity);
                 let base_level = self.compute_base_level(memory, context.current_time);
                 let spreading =
-                    self.compute_spreading(memory, graph, memories, context, &id_to_idx);
+                    self.compute_spreading(memory, graph, memories, &raw_similarities, &id_to_idx);
                 let emotional = self.compute_emotional(memory);
                 let contextual = self.compute_contextual(memory, context);
                 let temporal = self.compute_temporal(
                     memory,
                     context.current_time,
                     context,
-                    &memory_similarities,
+                    &raw_similarities,
+                    &id_to_idx,
                 );
-                let instance_noise = self.compute_instance_noise(memory);
-
                 let scores = RetrievalScores {
                     similarity,
                     raw_similarity,
@@ -652,7 +618,6 @@ impl RetrievalStrategy for CognitiveRetrieval {
                     contextual,
                     temporal,
                     working_memory_boost,
-                    instance_noise,
                     total: 0.0,
                 };
 
@@ -677,19 +642,21 @@ impl RetrievalStrategy for CognitiveRetrieval {
             matches.truncate(context.max_results);
         }
 
-        matches.retain(|m| m.score() >= context.min_threshold);
+        let activation_threshold = 0.3;
+        let noise_parameter = 0.1;
 
-        let temperature = 0.1;
-        let max_score = matches.iter().map(|m| m.score()).fold(0.0, f64::max);
-        let exp_scores: Vec<f64> = matches
-            .iter()
-            .map(|m| ((m.score() - max_score) / temperature).exp())
-            .collect();
-        let prob_total: f64 = exp_scores.iter().sum();
+        let scores: Vec<f64> = matches.iter().map(|m| m.score()).collect();
+        let probabilities = crate::recall::retrieval_probability_batch(
+            &scores,
+            activation_threshold,
+            noise_parameter,
+        );
 
-        for (m, exp_score) in matches.iter_mut().zip(exp_scores.iter()) {
-            m.probability = exp_score / prob_total;
+        for (m, &prob) in matches.iter_mut().zip(probabilities.iter()) {
+            m.probability = prob;
         }
+
+        matches.retain(|m| m.probability >= context.min_threshold);
 
         matches
     }
@@ -969,33 +936,6 @@ mod tests {
 
         assert_eq!(wm.compute_boost(mem_id, None), 0.0);
         assert_eq!(wm.compute_boost(mem_id, Some("other-session")), 0.0);
-    }
-
-    #[test]
-    fn test_instance_noise() {
-        let strategy = CognitiveRetrieval::new();
-        let current_time = now();
-
-        let mem_high_importance =
-            MemoryBuilder::new(make_embedding(&[1.0, 0.0, 0.0]), current_time)
-                .importance(0.9)
-                .build();
-
-        let mem_low_importance = MemoryBuilder::new(make_embedding(&[1.0, 0.0, 0.0]), current_time)
-            .importance(0.1)
-            .build();
-
-        let noise_high = strategy.compute_instance_noise(&mem_high_importance);
-        let noise_low = strategy.compute_instance_noise(&mem_low_importance);
-
-        assert!(
-            noise_high < noise_low,
-            "high importance should have lower noise: {} < {}",
-            noise_high,
-            noise_low
-        );
-        assert!(noise_high >= 0.0);
-        assert!(noise_low >= 0.0);
     }
 
     #[tokio::test]

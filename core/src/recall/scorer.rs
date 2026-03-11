@@ -108,6 +108,78 @@ pub fn cosine_similarity_batch(probe: &[f64], targets: &[&[f64]]) -> Vec<f64> {
         .collect()
 }
 
+#[inline]
+pub fn retrieval_probability(total_activation: f64, threshold: f64, noise: f64) -> f64 {
+    if noise <= 0.0 {
+        return if total_activation >= threshold {
+            1.0
+        } else {
+            0.0
+        };
+    }
+    1.0 / (1.0 + (-(total_activation - threshold) / noise).exp())
+}
+
+#[inline]
+pub fn retrieval_probability_batch(activations: &[f64], threshold: f64, noise: f64) -> Vec<f64> {
+    if noise <= 0.0 {
+        return activations
+            .iter()
+            .map(|&a| if a >= threshold { 1.0 } else { 0.0 })
+            .collect();
+    }
+    let inv_noise = 1.0 / noise;
+    activations
+        .iter()
+        .map(|&a| 1.0 / (1.0 + (-(a - threshold) * inv_noise).exp()))
+        .collect()
+}
+
+#[inline]
+pub fn combine_activations_multiplicative(
+    probe_activation: f64,
+    base_level: f64,
+    spreading: f64,
+    emotional_weight: f64,
+) -> f64 {
+    let emotional_multiplier = 1.0 + (emotional_weight - 0.5);
+
+    let effective_base = if base_level.is_finite() {
+        base_level
+    } else {
+        -10.0
+    };
+
+    let recency_boost = ((effective_base + 10.0) / 10.0).clamp(0.0, 1.0);
+
+    let modulated_probe = probe_activation * emotional_multiplier;
+
+    modulated_probe * (1.0 + recency_boost) + spreading
+}
+
+#[inline]
+pub fn compute_surprise(
+    expected: &[f64],
+    actual: &[f64],
+    memory_age_days: f64,
+    memory_strength: f64,
+    base_threshold: f64,
+) -> f64 {
+    let sim = cosine_similarity(expected, actual);
+    let prediction_error = 1.0 - sim;
+
+    let age_factor = memory_age_days * 0.01;
+    let strength_factor = memory_strength * 0.2;
+    let dynamic_threshold = base_threshold + age_factor + strength_factor;
+
+    (prediction_error / dynamic_threshold).clamp(0.0, 1.0)
+}
+
+#[inline]
+pub fn triggers_lability(surprise: f64, threshold: f64) -> bool {
+    surprise > threshold
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

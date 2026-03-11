@@ -6,6 +6,7 @@ use crate::memory::{
 };
 use crate::recall::{
     CognitiveRetrieval, RetrievalContext, RetrievalMatch, RetrievalStrategy, WorkingMemoryBoost,
+    scorer::{compute_surprise, triggers_lability},
 };
 use crate::storage::Storage;
 use crate::types::{Embedding, Id, LinkKind, now};
@@ -315,10 +316,19 @@ impl<S: Storage> Hippocampus<S> {
         let current_time = now();
         for m in matches.iter().take(5) {
             if let Some(mut memory) = self.storage.get(m.memory_id).await? {
-                let surprise = 1.0 - m.scores.raw_similarity;
+                let age_days = ((current_time - memory.metadata.created_at) as f64) / 86_400_000.0;
+                let memory_strength = memory.metadata.importance;
 
-                if memory.metadata.should_reconsolidate(surprise) {
-                    memory.reconsolidate(probe, 0.1, current_time);
+                let surprise = compute_surprise(
+                    &memory.embedding,
+                    probe,
+                    age_days,
+                    memory_strength,
+                    memory.metadata.consolidation_threshold,
+                );
+
+                if triggers_lability(surprise, memory.metadata.consolidation_threshold) {
+                    memory.reconsolidate(probe, surprise * 0.2, current_time, surprise);
                 }
 
                 memory.metadata.accessed(current_time);

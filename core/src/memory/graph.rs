@@ -17,6 +17,7 @@ pub struct AssociationEdge {
     pub kind: LinkKind,
     pub created_at: Timestamp,
     pub last_activated: Timestamp,
+    pub last_decayed_at: Timestamp,
     pub activation_count: u64,
 }
 
@@ -29,6 +30,7 @@ impl AssociationEdge {
             kind,
             created_at: at,
             last_activated: at,
+            last_decayed_at: at,
             activation_count: 0,
         }
     }
@@ -39,10 +41,13 @@ impl AssociationEdge {
     }
 
     pub fn decay(&mut self, current_time: Timestamp, decay_rate: f64) {
-        let time_since_activation =
-            current_time.saturating_sub(self.last_activated) as f64 / 1000.0;
-        let decay_factor = (-decay_rate * time_since_activation).exp();
-        self.strength *= decay_factor;
+        let time_since_last_decay =
+            current_time.saturating_sub(self.last_decayed_at) as f64 / 1000.0;
+        if time_since_last_decay > 0.0 {
+            let decay_factor = (-decay_rate * time_since_last_decay).exp();
+            self.strength *= decay_factor;
+            self.last_decayed_at = current_time;
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::recall::scorer::cosine_similarity;
 use crate::types::{Embedding, Emotion, Id, LinkKind, Timestamp};
 
 const MAX_ACCESS_TIMESTAMPS: usize = 100;
@@ -47,66 +48,19 @@ impl TemporalContext {
             for x in &mut self.context_vector {
                 *x /= norm;
             }
+        } else {
+            for x in &mut self.context_vector {
+                *x = 0.0;
+            }
         }
     }
 
     pub fn similarity(&self, other_context: &TemporalContext) -> f64 {
-        if self.context_vector.len() != other_context.context_vector.len() {
-            return 0.0;
-        }
-
-        let dot_product: f64 = self
-            .context_vector
-            .iter()
-            .zip(other_context.context_vector.iter())
-            .map(|(a, b)| a * b)
-            .sum();
-
-        let norm_a: f64 = self
-            .context_vector
-            .iter()
-            .map(|x| x * x)
-            .sum::<f64>()
-            .sqrt();
-        let norm_b: f64 = other_context
-            .context_vector
-            .iter()
-            .map(|x| x * x)
-            .sum::<f64>()
-            .sqrt();
-
-        if norm_a > 0.0 && norm_b > 0.0 {
-            (dot_product / (norm_a * norm_b)).max(0.0)
-        } else {
-            0.0
-        }
+        cosine_similarity(&self.context_vector, &other_context.context_vector).max(0.0)
     }
 
     pub fn similarity_to_embedding(&self, embedding: &[f64]) -> f64 {
-        if self.context_vector.len() != embedding.len() {
-            return 0.0;
-        }
-
-        let dot_product: f64 = self
-            .context_vector
-            .iter()
-            .zip(embedding.iter())
-            .map(|(a, b)| a * b)
-            .sum();
-
-        let norm_a: f64 = self
-            .context_vector
-            .iter()
-            .map(|x| x * x)
-            .sum::<f64>()
-            .sqrt();
-        let norm_b: f64 = embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
-
-        if norm_a > 0.0 && norm_b > 0.0 {
-            (dot_product / (norm_a * norm_b)).max(0.0)
-        } else {
-            0.0
-        }
+        cosine_similarity(&self.context_vector, embedding).max(0.0)
     }
 }
 
@@ -250,59 +204,19 @@ impl MemoryMetadata {
     }
 
     pub fn base_level_activation(&self, current_time: Timestamp) -> f64 {
+        let time_since_creation =
+            (current_time.saturating_sub(self.created_at) as f64 / 1000.0).max(1.0);
+
         let access_boost = (self.access_count as f64 + 1.0).ln();
-
-        let mean_time_since_access = if !self.access_timestamps.is_empty() {
-            let sum: f64 = self
-                .access_timestamps
-                .iter()
-                .map(|&t| (current_time.saturating_sub(t) as f64 / 1000.0).max(1.0))
-                .sum();
-            sum / self.access_timestamps.len() as f64
-        } else {
-            (current_time.saturating_sub(self.created_at) as f64 / 1000.0).max(1.0)
-        };
-
-        let time_penalty = self.decay_rate * mean_time_since_access.ln();
-
+        let time_penalty = self.decay_rate * time_since_creation.ln();
         let base = access_boost - time_penalty;
 
         (base * self.importance).max(0.0)
     }
 
-    pub fn base_level_activation_legacy(&self, current_time: Timestamp) -> f64 {
-        let time_since_creation = current_time.saturating_sub(self.created_at) as f64 / 1000.0;
-        let decay = (-self.decay_rate * time_since_creation).exp();
-
-        if self.access_count == 0 {
-            return decay * 0.5 * self.importance;
-        }
-
-        let access_boost = 1.0 + (self.access_count as f64).ln();
-
-        decay * access_boost * self.importance
-    }
-
     pub fn compute_surprise(&self, expected_embedding: &[f64], actual_embedding: &[f64]) -> f64 {
-        if expected_embedding.len() != actual_embedding.len() {
-            return 1.0;
-        }
-
-        let dot_product: f64 = expected_embedding
-            .iter()
-            .zip(actual_embedding.iter())
-            .map(|(a, b)| a * b)
-            .sum();
-
-        let norm_a: f64 = expected_embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
-        let norm_b: f64 = actual_embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
-
-        if norm_a > 0.0 && norm_b > 0.0 {
-            let similarity = (dot_product / (norm_a * norm_b)).clamp(0.0, 1.0);
-            1.0 - similarity
-        } else {
-            1.0
-        }
+        let similarity = cosine_similarity(expected_embedding, actual_embedding).clamp(0.0, 1.0);
+        1.0 - similarity
     }
 
     pub fn should_reconsolidate(&self, surprise: f64) -> bool {
@@ -370,6 +284,14 @@ impl MemoryMetadata {
         self.lability = self.lability.max(0.1);
     }
 
+    pub fn apply_reconsolidation_with_surprise(&mut self, surprise: f64) {
+        if surprise > 0.8 {
+            self.lability = (self.lability + 0.5).min(1.0);
+        }
+        self.lability *= 0.9;
+        self.lability = self.lability.max(0.1);
+    }
+
     pub fn emotional_modulation(&self) -> f64 {
         self.emotional_weight.weight() * self.importance
     }
@@ -408,6 +330,7 @@ pub struct Association {
     pub kind: LinkKind,
     pub created_at: Timestamp,
     pub last_activated: Timestamp,
+    pub last_decayed_at: Timestamp,
     pub activation_count: u64,
 }
 
@@ -419,6 +342,7 @@ impl Association {
             kind,
             created_at,
             last_activated: created_at,
+            last_decayed_at: created_at,
             activation_count: 0,
         }
     }
@@ -445,10 +369,13 @@ impl Association {
     }
 
     pub fn decay(&mut self, current_time: Timestamp, decay_rate: f64) {
-        let time_since_activation =
-            current_time.saturating_sub(self.last_activated) as f64 / 1000.0;
-        let decay_factor = (-decay_rate * time_since_activation).exp();
-        self.strength *= decay_factor;
+        let time_since_last_decay =
+            current_time.saturating_sub(self.last_decayed_at) as f64 / 1000.0;
+        if time_since_last_decay > 0.0 {
+            let decay_factor = (-decay_rate * time_since_last_decay).exp();
+            self.strength *= decay_factor;
+            self.last_decayed_at = current_time;
+        }
     }
 }
 
@@ -540,6 +467,7 @@ impl Memory {
         new_embedding: &[f64],
         learning_rate: f64,
         current_time: Timestamp,
+        surprise: f64,
     ) {
         let alpha = learning_rate * self.metadata.lability;
 
@@ -553,10 +481,14 @@ impl Memory {
                 for x in &mut self.embedding {
                     *x /= norm;
                 }
+            } else {
+                for x in &mut self.embedding {
+                    *x = 0.0;
+                }
             }
         }
 
-        self.metadata.apply_reconsolidation();
+        self.metadata.apply_reconsolidation_with_surprise(surprise);
         self.metadata.last_consolidation_at = current_time;
         self.metadata.consolidation_state = ConsolidationState::Reconsolidating;
     }
@@ -836,7 +768,7 @@ mod tests {
         let mut memory = Memory::text("test", embedding.clone(), now);
 
         let initial_embedding = memory.embedding.clone();
-        memory.reconsolidate(&[0.9, 0.1, 0.0], 0.5, now);
+        memory.reconsolidate(&[0.9, 0.1, 0.0], 0.5, now, 0.5);
 
         let changed = initial_embedding
             .iter()
@@ -855,7 +787,7 @@ mod tests {
         let mut memory = Memory::text("test", embedding.clone(), now);
 
         for _ in 0..10 {
-            memory.reconsolidate(&[1.0, 0.0, 0.0], 0.1, now);
+            memory.reconsolidate(&[1.0, 0.0, 0.0], 0.1, now, 0.5);
         }
 
         let norm: f64 = memory.embedding.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -870,7 +802,7 @@ mod tests {
         let mut memory = Memory::text("test", embedding.clone(), now);
 
         let initial_embedding = memory.embedding.clone();
-        memory.reconsolidate(&[0.0, 1.0, 0.0], 0.01, now);
+        memory.reconsolidate(&[0.0, 1.0, 0.0], 0.01, now, 0.5);
 
         let change: f64 = initial_embedding
             .iter()
@@ -928,7 +860,7 @@ mod tests {
 
         memory.metadata.last_accessed_at = now - 3_600_000;
         let decay_one_hour = memory.metadata.compute_session_decay_rate(now);
-        assert!(decay_one_hour >= 0.4 && decay_one_hour < 0.45);
+        assert!((0.4..0.45).contains(&decay_one_hour));
 
         memory.metadata.last_accessed_at = now - 25 * 3_600_000;
         let decay_one_day = memory.metadata.compute_session_decay_rate(now);
