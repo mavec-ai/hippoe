@@ -1,3 +1,23 @@
+//! Association building and management.
+//!
+//! This module provides [`AssociationBuilder`] for constructing associations
+//! between memories based on multiple criteria:
+//!
+//! - **Semantic**: Content similarity via embedding cosine similarity
+//! - **Episodic**: Shared context, tags, or keyword overlap
+//! - **Temporal**: Temporal proximity within configurable time windows
+//!
+//! # Association Types
+//!
+//! | Kind | Threshold | Basis |
+//! |------|-----------|-------|
+//! | Semantic | 0.7 (default) | Embedding similarity |
+//! | Episodic | 0.5 (default) | Context/tags/keywords |
+//! | Temporal | 0.3 (default) | Time proximity (60s window) |
+//!
+//! The builder pattern allows fine-grained control over which association
+//! types are enabled and their respective thresholds.
+
 use crate::memory::{Association, AssociationGraph, Memory};
 use crate::recall::similarity_batch;
 use crate::types::{Id, LinkKind, Timestamp};

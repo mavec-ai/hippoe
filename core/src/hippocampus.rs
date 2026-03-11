@@ -1,3 +1,28 @@
+//! Central orchestrator for memory operations in hippoe-core.
+//!
+//! This module provides the main API for memory management:
+//! - `memorize()`: Store new memories with automatic association building
+//! - `recall()`: Retrieve memories using cognitive strategies
+//! - `forget()`: Remove memories from storage
+//! - Working memory tracking with session isolation
+//!
+//! # Architecture
+//!
+//! - `Hippocampus`: Main struct coordinating storage, retrieval, and temporal context
+//! - `HippocampusBuilder`: Fluent API for configuration
+//! - Temporal context updates on each memorization
+//! - Association graph built automatically for new memories
+//!
+//! # Thread Safety
+//!
+//! All methods use immutable `&self` for concurrent access.
+//! Interior mutability via RwLock for temporal_context and session_id.
+//!
+//! # Data Integrity
+//!
+//! Graph updates occur AFTER storage commit to prevent orphaned associations.
+//! See `memorize()` implementation for ordering rationale.
+
 use crate::config::Config;
 use crate::error::Result;
 use crate::memory::{
@@ -359,11 +384,8 @@ impl<S: Storage> Hippocampus<S> {
 
 #[derive(Default)]
 pub struct HippocampusBuilder {
-    decay_rate: Option<f64>,
     min_score: Option<f64>,
     max_results: Option<usize>,
-    emotion_weight: Option<f64>,
-    context_weight: Option<f64>,
     semantic_threshold: Option<f64>,
     episodic_threshold: Option<f64>,
     temporal_threshold: Option<f64>,
@@ -371,11 +393,6 @@ pub struct HippocampusBuilder {
 }
 
 impl HippocampusBuilder {
-    pub fn decay_rate(mut self, rate: f64) -> Self {
-        self.decay_rate = Some(rate);
-        self
-    }
-
     pub fn min_score(mut self, score: f64) -> Self {
         self.min_score = Some(score);
         self
@@ -383,16 +400,6 @@ impl HippocampusBuilder {
 
     pub fn max_results(mut self, max: usize) -> Self {
         self.max_results = Some(max);
-        self
-    }
-
-    pub fn emotion_weight(mut self, weight: f64) -> Self {
-        self.emotion_weight = Some(weight);
-        self
-    }
-
-    pub fn context_weight(mut self, weight: f64) -> Self {
-        self.context_weight = Some(weight);
         self
     }
 
@@ -419,20 +426,11 @@ impl HippocampusBuilder {
     pub fn build<S: Storage>(self, storage: S) -> Result<Hippocampus<S>> {
         let mut config_builder = Config::builder();
 
-        if let Some(v) = self.decay_rate {
-            config_builder = config_builder.decay_rate(v);
-        }
         if let Some(v) = self.min_score {
             config_builder = config_builder.min_score(v);
         }
         if let Some(v) = self.max_results {
             config_builder = config_builder.max_results(v);
-        }
-        if let Some(v) = self.emotion_weight {
-            config_builder = config_builder.emotion_weight(v);
-        }
-        if let Some(v) = self.context_weight {
-            config_builder = config_builder.context_weight(v);
         }
 
         let config = config_builder.build()?;
@@ -452,13 +450,7 @@ impl HippocampusBuilder {
             assoc_builder = assoc_builder.with_max_associations(v);
         }
 
-        let mut retrieval_strategy = CognitiveRetrieval::new();
-        if let Some(v) = self.emotion_weight {
-            retrieval_strategy = retrieval_strategy.with_emotional_weight(v);
-        }
-        if let Some(v) = self.context_weight {
-            retrieval_strategy = retrieval_strategy.with_contextual_weight(v);
-        }
+        let retrieval_strategy = CognitiveRetrieval::new();
 
         let embedding_dim = 384;
         let temporal_context = Arc::new(RwLock::new(TemporalContext::new(embedding_dim)));
@@ -566,7 +558,6 @@ mod tests {
     async fn test_hippocampus_builder() {
         let storage = InMemoryStorage::new();
         let hippoe = HippocampusBuilder::default()
-            .decay_rate(0.3)
             .min_score(0.05)
             .max_results(20)
             .semantic_threshold(0.8)
@@ -574,7 +565,6 @@ mod tests {
             .build(storage)
             .unwrap();
 
-        assert_eq!(hippoe.config().decay_rate, 0.3);
         assert_eq!(hippoe.config().min_score, 0.05);
     }
 

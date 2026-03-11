@@ -1,3 +1,25 @@
+//! Core type definitions for hippoe-core.
+//!
+//! This module provides the fundamental types used throughout the memory system:
+//!
+//! - [`Id`]: Unique identifier for memories
+//! - [`Emotion`]: Emotional dimensions based on the Circumplex Model of Affect
+//! - [`Link`] and [`LinkKind`]: Association types between memories
+//! - [`Embedding`]: Vector representation type alias
+//! - [`Timestamp`]: Time representation
+//!
+//! # Circumplex Model of Affect
+//!
+//! The [`Emotion`] struct implements Russell's Circumplex Model (1980), which
+//! represents emotional states as points in a 2D space defined by:
+//!
+//! - **Valence**: Pleasantness dimension (negative to positive)
+//! - **Arousal**: Activation dimension (calm to excited)
+//!
+//! Reference: Russell, J. A. (1980). A circumplex model of affect.
+//! *Journal of Personality and Social Psychology*, 39(6), 1161-1178.
+//! DOI: 10.1037/h0077714
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

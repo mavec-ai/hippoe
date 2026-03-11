@@ -764,7 +764,6 @@ async fn run_naive_retrieval(test: &TestCase, memories: &[Memory]) -> Vec<usize>
 
 async fn run_cognitive_retrieval(test: &TestCase, memories: &[Memory]) -> Vec<usize> {
     let hippoe = HippocampusBuilder::default()
-        .emotion_weight(0.3)
         .build(InMemoryStorage::new())
         .expect("Failed to build hippocampus");
 

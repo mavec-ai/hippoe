@@ -1,3 +1,25 @@
+//! # hippoe-core
+//!
+//! A cognitive-inspired memory system implementing multiple theories from
+//! computational cognitive science.
+//!
+//! ## Overview
+//!
+//! hippoe-core provides a memory architecture inspired by human memory research,
+//! implementing:
+//!
+//! - **ACT-R Base-Level Activation** (Anderson, 1997): Memory strength based on
+//!   access frequency and recency
+//! - **MINERVA 2 Similarity** (Hintzman, 1986): Cubed cosine similarity for
+//!   probe-to-trace matching
+//! - **Temporal Context Model** (Howard & Kahana, 2002): Temporal associations
+//!   and context drift
+//! - **Reconsolidation Theory** (Nader et al., 2000): Memory updates upon retrieval
+//! - **Spreading Activation** (Anderson, 1983): Activation propagation through
+//!   association networks
+//! - **Circumplex Model of Affect** (Russell, 1980): Valence/arousal emotion dimensions
+//! - **Ebbinghaus Forgetting Curve** (1885): Session-based memory decay
+
 pub mod config;
 pub mod embedding;
 pub mod error;

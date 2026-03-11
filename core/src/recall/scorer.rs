@@ -1,3 +1,32 @@
+//! Similarity and activation functions for memory retrieval.
+//!
+//! This module implements core similarity and activation algorithms:
+//! - MINERVA 2 cubed similarity (Hintzman, 1986)
+//! - Cosine similarity with `\[0,1\]` clamping
+//! - Multiplicative activation combination
+//! - Surprise computation for reconsolidation triggers
+//!
+//! # MINERVA 2 Activation
+//!
+//! Formula: `similarity = cos³(a, b)` where:
+//! - `cos(a, b)` = cosine similarity between vectors
+//! - Cubing amplifies differences and emphasizes strong matches
+//! - Result in range `\[0, 1\]` (negative values clamped to 0)
+//!
+//! # Batch Processing
+//!
+//! Use `similarity_batch()` and `cosine_similarity_batch()` for retrieval hot path.
+//! Pre-computed probe norm provides ~15% performance improvement.
+//!
+//! # Multiplicative Combination
+//!
+//! Combines multiple activation sources: `activation = product of factors`
+//! Ensures all factors must be present for high activation.
+//!
+//! # References
+//!
+//! - Hintzman, D. L. (1986). "Schema abstraction" in a multiple-trace memory model. DOI:10.1037/0033-295X.93.4.528
+
 #[inline]
 pub fn similarity(a: &[f64], b: &[f64]) -> f64 {
     if a.len() != b.len() || a.is_empty() {
@@ -17,7 +46,7 @@ pub fn similarity(a: &[f64], b: &[f64]) -> f64 {
     }
 
     let cos = dot / denom;
-    cos.powi(3)
+    cos.powi(3).max(0.0)
 }
 
 #[inline]

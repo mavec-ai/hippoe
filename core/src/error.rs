@@ -11,17 +11,8 @@ pub enum Error {
     #[error("embedding dimension mismatch: expected {expected}, got {actual}")]
     DimensionMismatch { expected: usize, actual: usize },
 
-    #[error("invalid decay rate: {0} (must be > 0)")]
-    InvalidDecayRate(f64),
-
     #[error("invalid min_score: {0} (must be >= 0)")]
     InvalidMinScore(f64),
-
-    #[error("invalid emotion_weight: {0} (must be >= 0)")]
-    InvalidEmotionWeight(f64),
-
-    #[error("invalid context_weight: {0} (must be >= 0)")]
-    InvalidContextWeight(f64),
 
     #[error("invalid link strength: {0}")]
     InvalidLinkStrength(f64),

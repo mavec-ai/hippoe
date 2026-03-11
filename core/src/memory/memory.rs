@@ -1,3 +1,37 @@
+//! Core memory structures and cognitive models for hippoe-core.
+//!
+//! This module implements the fundamental memory unit with cognitive properties:
+//! - ACT-R base-level activation (Anderson, 1997)
+//! - Memory reconsolidation triggered by surprise (Nader et al., 2000)
+//! - Emotional modulation via valence and arousal (Cain et al., 2020)
+//! - Temporal context tracking (Howard & Kahana, 2002)
+//!
+//! # Architecture
+//!
+//! - `Memory`: Core memory unit with embedding, content, and metadata
+//! - `MemoryMetadata`: Cognitive properties (lability, consolidation state, access patterns)
+//! - `TemporalContext`: Time-evolving context vector for temporal associations
+//! - `AssociationGraph`: Bidirectional graph of memory associations
+//!
+//! # ACT-R Base-Level Activation
+//!
+//! Formula: `B_i = ln(Σ t_j^-d)` where:
+//! - `t_j` = time since j-th access
+//! - `d` = decay rate (default: 0.1)
+//! - Result clamped to [0, ∞)
+//!
+//! # Reconsolidation
+//!
+//! Reactivated memories become labile and require protein synthesis for re-stabilization.
+//! Triggered when surprise > consolidation_threshold.
+//!
+//! # References
+//!
+//! - Anderson, J. R. (1997). ACT: A simple theory of complex cognition. DOI:10.1037/0003-066X.52.4.355
+//! - Nader, K., et al. (2000). Fear memories require protein synthesis for reconsolidation. DOI:10.1038/35021052
+//! - Cain, C. K., et al. (2020). Emotional memory: A human-centered framework. DOI:10.1002/jnr.24659
+//! - Howard, M. W., & Kahana, M. J. (2002). A distributed representation of temporal context. DOI:10.1006/jmps.2001.1388
+
 use serde::{Deserialize, Serialize};
 
 use crate::recall::scorer::cosine_similarity;

@@ -24,21 +24,15 @@ fn main() {
 
     let storage = InMemoryStorage::new();
     let hippoe = HippocampusBuilder::default()
-        .decay_rate(0.1)
         .min_score(0.1)
         .max_results(10)
-        .emotion_weight(0.3)
-        .context_weight(0.2)
         .semantic_threshold(0.5)
         .build(storage)
         .unwrap();
 
     println!("Configuration:");
-    println!("  Decay rate: {}", hippoe.config().decay_rate);
     println!("  Min score: {}", hippoe.config().min_score);
     println!("  Max results: {}", hippoe.config().max_results);
-    println!("  Emotion weight: {}", hippoe.config().emotion_weight);
-    println!("  Context weight: {}", hippoe.config().context_weight);
 
     let now = 1_000_000_000_u64;
 

@@ -1,3 +1,19 @@
+//! Storage serialization and persistence layer for hippoe-core.
+//!
+//! This module provides data structures for serializing and persisting memories
+//! to various storage backends (PostgreSQL, SQLite, in-memory).
+//!
+//! # Architecture
+//!
+//! - `MemoryRow`: Database row representation with binary-encoded fields
+//! - `MemoryData`: In-memory representation with typed fields
+//! - `InMemoryStorage`: Thread-safe in-memory storage using Arc<RwLock<HashMap>>
+//!
+//! # Thread Safety
+//!
+//! All storage methods use immutable `&self` to allow concurrent access.
+//! Interior mutability is achieved through RwLock for thread-safe operations.
+
 use bincode;
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "postgres", feature = "sqlite"))]

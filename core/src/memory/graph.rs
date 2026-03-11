@@ -1,3 +1,28 @@
+//! Association graph implementation for memory networks.
+//!
+//! This module provides the [`AssociationGraph`] data structure that represents
+//! the network of associations between memories, enabling efficient traversal
+//! and spreading activation algorithms.
+//!
+//! # Spreading Activation
+//!
+//! The graph implements Anderson's Spreading Activation theory (1983), where
+//! activation propagates from source nodes through connected edges with
+//! decaying strength:
+//!
+//! ```text
+//! propagated_activation = source_activation * edge_strength * decay_factor
+//! ```
+//!
+//! Key characteristics:
+//! - Activation decays exponentially with graph distance
+//! - Edge strength modulates propagation (stronger edges = more activation)
+//! - Multiple paths to a node accumulate activation
+//!
+//! Reference: Anderson, J. R. (1983). A spreading activation theory of memory.
+//! *Journal of Verbal Learning and Verbal Behavior*, 22(3), 261-295.
+//! DOI: 10.1016/S0022-5371(83)90201-3
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::types::{Id, LinkKind, Timestamp};
