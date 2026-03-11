@@ -21,7 +21,7 @@
 //!
 //! Reference: Anderson, J. R. (1983). A spreading activation theory of memory.
 //! *Journal of Verbal Learning and Verbal Behavior*, 22(3), 261-295.
-//! DOI: 10.1016/S0022-5371(83)90201-3
+//! DOI:10.1016/S0022-5371(83)90201-3
 
 use std::collections::{HashMap, HashSet, VecDeque};
 

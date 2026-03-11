@@ -8,7 +8,7 @@
 //! hippoe-core provides a memory architecture inspired by human memory research,
 //! implementing:
 //!
-//! - **ACT-R Base-Level Activation** (Anderson, 1997): Memory strength based on
+//! - **ACT-R Base-Level Activation** (Anderson, 1996): Memory strength based on
 //!   access frequency and recency
 //! - **MINERVA 2 Similarity** (Hintzman, 1986): Cubed cosine similarity for
 //!   probe-to-trace matching

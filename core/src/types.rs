@@ -18,7 +18,7 @@
 //!
 //! Reference: Russell, J. A. (1980). A circumplex model of affect.
 //! *Journal of Personality and Social Psychology*, 39(6), 1161-1178.
-//! DOI: 10.1037/h0077714
+//! DOI:10.1037/h0077714
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

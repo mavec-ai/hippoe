@@ -8,15 +8,15 @@
 //!
 //! # MINERVA 2 Activation
 //!
-//! Formula: `similarity = cos³(a, b)` where:
+//! Formula: `similarity = max(0, cos³(a, b))` where:
 //! - `cos(a, b)` = cosine similarity between vectors
 //! - Cubing amplifies differences and emphasizes strong matches
-//! - Result in range `\[0, 1\]` (negative values clamped to 0)
+//! - Negative values clamped to 0
 //!
 //! # Batch Processing
 //!
 //! Use `similarity_batch()` and `cosine_similarity_batch()` for retrieval hot path.
-//! Pre-computed probe norm provides ~15% performance improvement.
+//! Pre-computed probe norm improves performance by avoiding redundant calculations.
 //!
 //! # Multiplicative Combination
 //!
@@ -25,7 +25,7 @@
 //!
 //! # References
 //!
-//! - Hintzman, D. L. (1986). "Schema abstraction" in a multiple-trace memory model. DOI:10.1037/0033-295X.93.4.528
+//! - Hintzman, D. L. (1986). "Schema abstraction" in a multiple-trace memory model. DOI:10.1037/0033-295X.93.4.411
 
 #[inline]
 pub fn similarity(a: &[f64], b: &[f64]) -> f64 {

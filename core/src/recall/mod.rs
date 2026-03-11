@@ -19,8 +19,9 @@
 //! | Contextual | 0.3 | Context match bonus |
 //! | Temporal | 0.3 | TCM temporal context similarity |
 //!
-//! The final score is computed multiplicatively:
-//! `score = ∏(factor^weight)` normalized to [0, 1]
+//! The final score combines factors multiplicatively with additive boosts:
+//! - Core factors (similarity, base-level, spreading, emotional) combined via `combine_activations_multiplicative`
+//! - Context and temporal factors applied as additive boosts: `base * (1 + context*weight) * (1 + temporal*weight)`
 //!
 //! # MINERVA 2 Similarity
 //!
@@ -29,7 +30,7 @@
 //!
 //! The cubic power emphasizes strong matches and suppresses weak ones.
 //!
-//! Reference: Hintzman, D. L. (1986). MINERVA 2. DOI: 10.1037/0033-295X.93.4.528
+//! Reference: Hintzman, D. L. (1986). "Schema abstraction" in a multiple-trace memory model. DOI:10.1037/0033-295X.93.4.411
 
 mod query;
 pub mod scorer;
