@@ -18,7 +18,6 @@
 //! - **Spreading Activation** (Anderson, 1983): Activation propagation through
 //!   association networks
 //! - **Circumplex Model of Affect** (Russell, 1980): Valence/arousal emotion dimensions
-//! - **Ebbinghaus Forgetting Curve** (1885): Session-based memory decay
 
 pub mod config;
 pub mod embedding;

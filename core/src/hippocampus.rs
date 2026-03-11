@@ -17,11 +17,6 @@
 //!
 //! All methods use immutable `&self` for concurrent access.
 //! Interior mutability via RwLock for temporal_context and session_id.
-//!
-//! # Data Integrity
-//!
-//! Graph updates occur AFTER storage commit to prevent orphaned associations.
-//! See `memorize()` implementation for ordering rationale.
 
 use crate::config::Config;
 use crate::error::Result;
