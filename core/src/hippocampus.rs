@@ -47,8 +47,6 @@ impl<S: Storage> Hippocampus<S> {
         self.association_builder
             .build_associations(&memory, &existing, &mut graph);
 
-        self.storage.update_graph(|g| *g = graph).await?;
-
         let mut memory = memory;
 
         if let Some(last_memory) = existing.iter().max_by(|a, b| {
@@ -63,6 +61,9 @@ impl<S: Storage> Hippocampus<S> {
         }
 
         self.storage.put(memory).await?;
+
+        self.storage.update_graph(|g| *g = graph).await?;
+
         Ok(id)
     }
 
@@ -89,8 +90,6 @@ impl<S: Storage> Hippocampus<S> {
                 }
             }
         }
-
-        self.storage.update_graph(|g| *g = graph).await?;
 
         let mut ids = Vec::with_capacity(memories.len());
         let mut memories_with_links: Vec<Memory> = memories;
@@ -124,6 +123,8 @@ impl<S: Storage> Hippocampus<S> {
             self.storage.put(memory).await?;
             ids.push(id);
         }
+
+        self.storage.update_graph(|g| *g = graph).await?;
 
         Ok(ids)
     }

@@ -275,11 +275,12 @@ impl<'a, S: crate::storage::Storage> MemoryQueryBuilder<'a, S> {
                     .await
             };
 
-            let ids: std::collections::HashSet<Id> = matches.iter().map(|m| m.memory_id).collect();
+            let memory_map: std::collections::HashMap<Id, Memory> =
+                filtered.into_iter().map(|m| (m.id, m)).collect();
 
-            let mut results: Vec<Memory> = filtered
-                .into_iter()
-                .filter(|m| ids.contains(&m.id))
+            let mut results: Vec<Memory> = matches
+                .iter()
+                .filter_map(|m| memory_map.get(&m.memory_id).cloned())
                 .collect();
 
             if let Some(assoc_id) = self.query.include_associations_of {

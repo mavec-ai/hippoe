@@ -631,17 +631,6 @@ impl RetrievalStrategy for CognitiveRetrieval {
             })
             .collect();
 
-        matches.sort_by(|a, b| {
-            b.score()
-                .partial_cmp(&a.score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.memory_id.0.cmp(&b.memory_id.0))
-        });
-
-        if matches.len() > context.max_results {
-            matches.truncate(context.max_results);
-        }
-
         let activation_threshold = 0.3;
         let noise_parameter = 0.1;
 
@@ -657,6 +646,17 @@ impl RetrievalStrategy for CognitiveRetrieval {
         }
 
         matches.retain(|m| m.probability >= context.min_threshold);
+
+        matches.sort_by(|a, b| {
+            b.score()
+                .partial_cmp(&a.score())
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.memory_id.0.cmp(&b.memory_id.0))
+        });
+
+        if matches.len() > context.max_results {
+            matches.truncate(context.max_results);
+        }
 
         matches
     }
